@@ -13,7 +13,7 @@
 ![IPFS](https://img.shields.io/badge/IPFS-Pinata-65C2CB?logo=ipfs&logoColor=white)
 ![WalletConnect](https://img.shields.io/badge/WalletConnect-Reown-3b99fc?logo=walletconnect&logoColor=white)
 ![Sepolia](https://img.shields.io/badge/Network-Sepolia-627EEA?logo=ethereum&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-167%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-178%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -172,7 +172,7 @@ being decentralized and outside any single company's control. The wallet address
   subject spammed with badges cannot make the count exceed an `eth_call` gas cap.
 - **Dark/light design system** — a MetaMask-inspired wallet aesthetic, dark by
   default, with a persisted toggle.
-- **167 tests** — 56 Solidity (Hardhat) + 111 Dart/Flutter.
+- **178 tests** — 56 Solidity (Hardhat) + 122 Dart/Flutter.
 
 ---
 
@@ -288,7 +288,7 @@ revert. It costs a little Sepolia ETH and one small IPFS pin.
 ```bash
 cp .env.example .env        # then fill in your own values
 flutter pub get
-flutter test                # 111 passing
+flutter test                # 122 passing
 flutter run -d chrome
 ```
 
@@ -468,7 +468,7 @@ de_kyc/
 │   │   └── doc_view/                # PDF preview: iframe on web, system viewer elsewhere
 │   └── screens/                     # onboarding, auth, upload wizard, status, verifier mode
 ├── assets/contracts/                # KYCRegistry + KYCSoulboundToken ABIs (generated)
-├── test/                            # 111 Dart/Flutter tests
+├── test/                            # 122 Dart/Flutter tests
 └── .env.example                     # SEPOLIA_RPC_URL / PINATA_PROXY_URL / PINATA_JWT / …
 ```
 

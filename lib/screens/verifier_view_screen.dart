@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../config/chain_config.dart';
 import '../services/auth_service.dart';
+import '../services/guest_list.dart';
 import '../services/key_wrap_service.dart';
 import '../services/kyc_contract_service.dart' show VerifierGrant;
 import '../services/kyc_flow_service.dart';
@@ -33,7 +34,12 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
   final List<String> _verifiers = [];
 
   /// address → the row as the registry reports it (absent = not yet read).
+  /// Keyed by [_canon] form, matching what `grantsOf` returns.
   final Map<String, VerifierGrant> _state = {};
+
+  /// Addresses the user has typed but not yet granted. They have no on-chain
+  /// row, so the chain sync must merge them in rather than drop them.
+  final Set<String> _pending = {};
 
   String? _busyAddr;
   bool _refreshing = false;
@@ -60,6 +66,7 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
     setState(() {
       _verifiers.clear();
       _state.clear();
+      _pending.clear();
       _loadedOwner = null;
     });
     _restoreList();
@@ -82,15 +89,28 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
     if (!mounted || owner != _wallet.address) return;
     if (cached.isNotEmpty) {
       setState(() {
-        for (final v in cached) {
-          if (!_verifiers.contains(v)) _verifiers.add(v);
+        for (final entry in cached) {
+          // Older cache entries predate canonicalisation, so normalise on read.
+          final v = _canon(entry);
+          if (!_verifiers.contains(v)) {
+            _verifiers.add(v);
+            // Treated as pending until the chain says otherwise; the sync
+            // promotes it the moment a matching grant turns up.
+            _pending.add(v);
+          }
         }
       });
     }
     await _syncFromChain();
   }
 
-  /// Replace the list with what the registry actually holds.
+  /// Merge the registry's rows over the local ones.
+  ///
+  /// The chain is authoritative for STATUS, but it is not the whole list: an
+  /// address the user has typed but not yet granted does not exist on-chain, so
+  /// replacing the list outright made a freshly-added row vanish about a second
+  /// after it appeared — and then persisted that removal to the cache. Chain
+  /// rows first (they carry status), then any pending address not among them.
   Future<void> _syncFromChain() async {
     final owner = _wallet.address;
     if (owner == null) return;
@@ -98,19 +118,23 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
     try {
       final grants = await _flow.listGrants(owner);
       if (!mounted || owner != _wallet.address) return;
+      final merged = GuestList.merge(chain: grants, pending: _pending);
       setState(() {
-        _verifiers
-          ..clear()
-          ..addAll(grants.map((g) => g.address));
         _state
           ..clear()
-          ..addEntries(grants.map((g) => MapEntry(g.address, g)));
+          ..addEntries(
+              grants.map((g) => MapEntry(GuestList.canon(g.address), g)));
+        _pending
+          ..clear()
+          ..addAll(merged.pending);
+        _verifiers
+          ..clear()
+          ..addAll(merged.rows);
       });
-      // Keep the cache aligned so the next open paints the right rows.
       await _listStore.save(owner, _verifiers);
     } catch (_) {
-      // Chain unreachable — leave the cached rows visible rather than blanking
-      // the screen, but they are flagged as unverified by _accessLabel.
+      // Chain unreachable — leave the rows we have rather than blanking the
+      // screen; _accessLabel reports them as status-unknown.
     } finally {
       if (mounted) setState(() => _refreshing = false);
     }
@@ -127,20 +151,33 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
   static final RegExp _addressPattern = RegExp(r'^0x[0-9a-fA-F]{40}$');
 
   void _addRequest() {
-    final addr = _addrCtrl.text.trim();
+    final raw = _addrCtrl.text.trim();
     // Validate the FULL address (not just length/prefix) at add time, so a
     // malformed entry is rejected here in the UI rather than failing later at
     // transaction time inside EthereumAddress.fromHex.
-    if (!_addressPattern.hasMatch(addr)) {
+    if (!_addressPattern.hasMatch(raw)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a valid 0x… wallet address')),
       );
       return;
     }
+    final addr = _canon(raw);
+
+    if (_verifiers.contains(addr)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('That verifier is already on your list')),
+      );
+      setState(() => _addrCtrl.clear());
+      return;
+    }
+
     setState(() {
-      if (!_verifiers.contains(addr)) _verifiers.add(addr);
+      // Pending until a grant for it actually appears on-chain.
+      _pending.add(addr);
+      _verifiers.add(addr);
       _addrCtrl.clear();
     });
+
     final owner = _wallet.address;
     if (owner != null) {
       // Persist immediately, so the row survives leaving this screen even if
@@ -149,6 +186,9 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       _syncFromChain();
     }
   }
+
+  /// Canonical (EIP-55 checksummed) form — see [GuestList.canon].
+  static String _canon(String address) => GuestList.canon(address);
 
   /// Drop a verifier from the guest list ON-CHAIN.
   ///
@@ -175,7 +215,10 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       // Never granted — nothing on-chain to forget.
       if (owner != null) await _listStore.remove(owner, verifier);
       if (!mounted) return;
-      setState(() => _verifiers.remove(verifier));
+      setState(() {
+        _verifiers.remove(verifier);
+        _pending.remove(verifier);
+      });
       return;
     }
 
@@ -352,7 +395,13 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
   /// Human-readable on-chain access state for a row.
   String _accessLabel(String verifier) {
     final s = _state[verifier];
-    if (s == null) return 'Access status unknown';
+    if (s == null) {
+      // Added here but with no on-chain row: the user has not granted yet.
+      // Distinguished from a genuine read failure, which leaves it unknown.
+      return _pending.contains(verifier)
+          ? 'Not granted yet — tap ✓ to give access'
+          : 'Access status unknown';
+    }
     if (s.expiresAt == null) return 'No access (revoked)';
     if (_isStale(verifier)) {
       // Reported before expiry: it is the more actionable of the two, and the
