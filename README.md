@@ -283,6 +283,13 @@ the gateway and decrypt → tamper-check → `revokeAccess` → confirm the read
 refused again → mint a soulbound badge and confirm `approve`/`transferFrom`
 revert. It costs a little Sepolia ETH and one small IPFS pin.
 
+It runs every write as a **throwaway wallet** funded from the deployer for that
+run, and sweeps the remainder back afterwards. That isolation matters:
+`submitKYC` overwrites the signing account's record, so an earlier version that
+ran as the deployer silently replaced a real KYC record with a bundle encrypted
+under a discarded test key — which surfaced much later, on the verifier's
+screen, as "the key opened correctly, but it does not decrypt this bundle".
+
 ### 2) Flutter app (Flutter 3.29+ / Dart 3.7+)
 
 ```bash

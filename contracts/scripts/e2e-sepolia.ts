@@ -120,12 +120,47 @@ async function reverts(
   }
 }
 
+/** Enough for ~8 small writes on Sepolia, with slack. */
+const FUNDING_WEI = 3_000_000_000_000_000n; // 0.003 ETH
+
 async function main() {
   const env = readEnv();
-  const [user] = await ethers.getSigners();
+  const [deployer] = await ethers.getSigners();
+
+  // ---------------------------------------------------------------------------
+  // ISOLATION — do NOT run as the deployer.
+  //
+  // This script calls submitKYC, which OVERWRITES whatever KYC record the
+  // signing account holds. The deployer key is almost always the same account
+  // the developer drives the app with in MetaMask, so running as the deployer
+  // silently replaced a real user record with a bundle encrypted under the
+  // throwaway key generated below. The app could then never decrypt it, and the
+  // failure surfaced much later and far away as "the key opened correctly, but
+  // it does not decrypt this bundle".
+  //
+  // That happened. The fix is structural, not a warning: every write below is
+  // made by a wallet created fresh for this run and funded from the deployer,
+  // so the script cannot reach any account a human uses.
+  // ---------------------------------------------------------------------------
+  const user = ethers.Wallet.createRandom().connect(ethers.provider);
   // The "verifier" only ever READS, and reads are free eth_calls with an
-  // explicit `from` — so a single funded wallet proves the whole path.
+  // explicit `from` — so it never needs funding at all.
   const verifier = ethers.Wallet.createRandom();
+
+  const bal = await ethers.provider.getBalance(deployer.address);
+  if (bal < FUNDING_WEI * 2n) {
+    throw new Error(
+      `Deployer ${deployer.address} has ${ethers.formatEther(bal)} ETH — ` +
+        `too little to fund a throwaway test account. Top it up from a faucet.`
+    );
+  }
+  console.log(
+    `Funding throwaway test account ${user.address} with ` +
+      `${ethers.formatEther(FUNDING_WEI)} ETH from the deployer…`
+  );
+  await (
+    await deployer.sendTransaction({ to: user.address, value: FUNDING_WEI })
+  ).wait();
 
   const addrFile = path.resolve(
     __dirname, "..", "..", "lib", "config", "contract_address.dart"
@@ -143,56 +178,14 @@ async function main() {
 
   console.log(`Registry: ${registryAddr}`);
   console.log(`SBT:      ${sbtAddr}`);
-  console.log(`User:     ${user.address}`);
+  console.log(`User:     ${user.address} (throwaway, funded for this run)`);
   console.log(`Verifier: ${verifier.address} (read-only, unfunded)`);
 
-  // ---------------------------------------------------------------------------
-  // DESTRUCTIVE-WRITE GUARD
-  //
-  // This script calls submitKYC from the DEPLOYER key — which is very likely
-  // the same account the developer uses in MetaMask to drive the app. Running
-  // it therefore OVERWRITES whatever real KYC record that account holds, with a
-  // bundle encrypted under a throwaway key generated below. The record is then
-  // permanently undecryptable by the app: the wallet-derived key is correct,
-  // but it is not the key this script used, and the symptom shows up much later
-  // as "the key opened correctly, but it does not decrypt this bundle".
-  //
-  // That happened once. It must not happen silently again.
-  // ---------------------------------------------------------------------------
-  const APP_DOC_SET = ethers.keccak256(ethers.toUtf8Bytes(DOC_TYPES));
+  // Belt and braces: a freshly generated wallet cannot already hold a record,
+  // so if it somehow does, something is badly wrong — stop rather than write.
   if (await registry.hasRecord(user.address)) {
-    const dth = registry.interface.decodeFunctionResult(
-      "getDocTypeHash",
-      await ethers.provider.call({
-        to: registryAddr,
-        data: registry.interface.encodeFunctionData("getDocTypeHash", [
-          user.address,
-        ]),
-        from: user.address,
-      })
-    )[0];
-
-    if (dth === APP_DOC_SET && process.env.E2E_OVERWRITE !== "1") {
-      console.error(
-        `\n❌ Refusing to run.\n\n` +
-          `   ${user.address} already holds a KYC record whose document set\n` +
-          `   matches the APP's — i.e. it was uploaded from the DeKYC UI, by a\n` +
-          `   real user (probably you).\n\n` +
-          `   This script would overwrite it with a test bundle encrypted under\n` +
-          `   a throwaway key, leaving the app permanently unable to decrypt it.\n\n` +
-          `   Options:\n` +
-          `     • Run against a different DEPLOYER_PRIVATE_KEY (recommended), or\n` +
-          `     • re-run with E2E_OVERWRITE=1 if you really do want to discard\n` +
-          `       that record. You will have to re-upload from the app afterwards.\n`
-      );
-      process.exitCode = 1;
-      return;
-    }
-    console.log(
-      `\n⚠️  ${user.address} already has a record (version ` +
-        `${await registry.recordVersion(user.address)}). This run will REPLACE it,\n` +
-        `   and the replacement is only decryptable by this script. Re-upload\n` +
-        `   from the app when you are done testing.`
+    throw new Error(
+      `A brand-new wallet already has a KYC record. Refusing to write.`
     );
   }
 
@@ -402,6 +395,36 @@ async function main() {
     throw new Error("FAIL: transfer succeeded on a soulbound token");
   }
   console.log("    ✓ transferFrom() reverts — the badge is truly non-transferable");
+
+  // Return the unspent balance so repeated runs do not strand testnet ETH in
+  // a wallet nobody holds the key to after the process exits.
+  //
+  // Reserve using the network's ACTUAL fee cap, not a guess — the config sets
+  // maxFeePerGas to 20 gwei, and an under-reserve makes the sweep itself
+  // unaffordable. Cleanup must never fail the run: the assertions above have
+  // already passed by this point, so a stranded 0.002 ETH is not a test result.
+  try {
+    const fees = await ethers.provider.getFeeData();
+    const gasPrice = fees.maxFeePerGas ?? fees.gasPrice ?? 20_000_000_000n;
+    const reserve = 21_000n * gasPrice;
+    const left = await ethers.provider.getBalance(user.address);
+    if (left > reserve) {
+      await (
+        await user.sendTransaction({
+          to: deployer.address,
+          value: left - reserve,
+          gasLimit: 21_000,
+        })
+      ).wait();
+      console.log(
+        `\nSwept ${ethers.formatEther(left - reserve)} ETH back to the deployer.`
+      );
+    } else {
+      console.log(`\nNothing worth sweeping back (${ethers.formatEther(left)} ETH).`);
+    }
+  } catch (e: any) {
+    console.warn(`\n⚠️  Sweep failed (harmless): ${e.shortMessage ?? e.message}`);
+  }
 
   console.log("\n✅ END-TO-END PASSED against the live Sepolia deployment.");
 }
