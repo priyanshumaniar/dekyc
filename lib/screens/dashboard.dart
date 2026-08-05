@@ -163,6 +163,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     subtitle: 'The 2-minute tour — fun, zero jargon.',
                     onTap: () => Navigator.pushNamed(context, '/guide'),
                   ),
+                  const SizedBox(height: 10),
+                  DeUI.row(
+                    context,
+                    icon: Icons.menu_book_outlined,
+                    title: 'How to use it',
+                    // The concrete hand-off, which the concept tour does not
+                    // cover: who sends what, in what order.
+                    subtitle: role == UserRole.verifier
+                        ? 'Checking someone — what to send them, what to ask for.'
+                        : 'Sharing your documents — what to ask for, what to send.',
+                    onTap: () => Navigator.pushNamed(context, '/howto'),
+                  ),
                 ],
               ),
             ),

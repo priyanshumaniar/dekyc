@@ -5,6 +5,7 @@ import '../services/kyc_flow_service.dart';
 import '../services/wallet_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/components.dart';
+import 'how_to_use.dart';
 
 /// VERIFIER-side screen. A verifier (bank / exchange / employer) enters a
 /// user's wallet address and checks whether the user has granted them access.
@@ -97,7 +98,21 @@ class _AccessRequestScreenState extends State<AccessRequestScreen> {
   Widget build(BuildContext context) {
     final p = context.pal;
     return Scaffold(
-      appBar: AppBar(title: const Text('Verifier Mode')),
+      appBar: AppBar(
+        title: const Text('Verifier Mode'),
+        actions: [
+          IconButton(
+            tooltip: 'How verifying works',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const HowToUseScreen(role: UserRole.verifier),
+              ),
+            ),
+            icon: const Icon(Icons.help_outline),
+          ),
+        ],
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 640),

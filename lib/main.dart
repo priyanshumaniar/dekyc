@@ -9,6 +9,7 @@ import 'package:de_kyc/screens/wallet_connect_screen.dart';
 import 'package:de_kyc/screens/verifier_view_screen.dart';
 import 'package:de_kyc/screens/kyc_status_screen.dart';
 import 'package:de_kyc/screens/profile_screen.dart';
+import 'package:de_kyc/screens/how_to_use.dart';
 import 'package:de_kyc/screens/user_guide.dart';
 import 'package:de_kyc/services/auth_service.dart';
 import 'package:de_kyc/theme/app_theme.dart';
@@ -61,6 +62,7 @@ class MyApp extends StatelessWidget {
           '/profile': (context) => const ProfileScreen(),
           '/walletconnect': (context) => const WalletConnectScreen(),
           '/guide': (context) => const UserGuideScreen(),
+          '/howto': (context) => const HowToUseScreen(),
         },
       ),
     );

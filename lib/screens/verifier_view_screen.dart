@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../config/chain_config.dart';
+import '../services/auth_service.dart';
 import '../services/key_wrap_service.dart';
 import '../services/kyc_flow_service.dart';
 import '../services/wallet_service.dart';
+import 'how_to_use.dart';
 import '../theme/app_theme.dart';
 import '../theme/components.dart';
 
@@ -288,6 +290,17 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       appBar: AppBar(
         title: const Text('Manage Access'),
         actions: [
+          IconButton(
+            tooltip: 'How sharing works',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    const HowToUseScreen(role: UserRole.individual),
+              ),
+            ),
+            icon: const Icon(Icons.help_outline),
+          ),
           IconButton(
             tooltip: 'Re-read access status from the chain',
             onPressed:
