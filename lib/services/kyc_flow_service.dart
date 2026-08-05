@@ -232,6 +232,26 @@ class KycFlowService {
     );
   }
 
+  /// The caller's full guest list, read from the chain.
+  ///
+  /// This is the source of truth for "who can see my documents". It needs no
+  /// local storage and no indexer, so it is identical on every device.
+  Future<List<VerifierGrant>> listGrants(String userAddress) async {
+    final contract = await _contractService();
+    return contract.grantsOf(EthereumAddress.fromHex(userAddress));
+  }
+
+  /// Remove a verifier from the caller's on-chain guest list. Returns the tx
+  /// hash. Reverts on-chain if the grant is still live — revoke first.
+  Future<String> forgetVerifier(String verifierAddress) async {
+    final contract = await _contractService();
+    return _wallet.sendTransaction(
+      to: contract.contractAddress.hexEip55,
+      data: contract
+          .encodeForgetVerifier(EthereumAddress.fromHex(verifierAddress)),
+    );
+  }
+
   /// Whether [userAddress] has ever submitted a KYC record.
   Future<bool> hasRecord(String userAddress) async {
     final contract = await _contractService();

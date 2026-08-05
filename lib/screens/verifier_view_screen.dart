@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../config/chain_config.dart';
 import '../services/auth_service.dart';
 import '../services/key_wrap_service.dart';
+import '../services/kyc_contract_service.dart' show VerifierGrant;
 import '../services/kyc_flow_service.dart';
 import '../services/verifier_list_store.dart';
 import '../services/wallet_service.dart';
@@ -27,13 +28,12 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
   final KycFlowService _flow = KycFlowService();
   final TextEditingController _addrCtrl = TextEditingController();
 
-  /// Addresses the user has typed in. This is a local convenience list only —
-  /// the chain has no "list my verifiers" call, so we cannot enumerate grants.
+  /// The guest list, mirroring `KYCRegistry.grantsOf`. The chain is the source
+  /// of truth; a locally-typed address sits here only until it is granted.
   final List<String> _verifiers = [];
 
-  /// address → live on-chain grant state (absent = not yet read). This, not the
-  /// local list, is what the UI reports as access status.
-  final Map<String, GrantState> _state = {};
+  /// address → the row as the registry reports it (absent = not yet read).
+  final Map<String, VerifierGrant> _state = {};
 
   String? _busyAddr;
   bool _refreshing = false;
@@ -65,25 +65,55 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
     _restoreList();
   }
 
-  /// The guest list is device-remembered, not derived from chain state (the
-  /// registry cannot enumerate a mapping, and free-tier RPC cannot scan logs
-  /// far enough back). Without restoring it, leaving this screen and coming
-  /// back dropped every row while the grants stayed live on-chain — which read
-  /// as access vanishing on its own.
+  /// Paint the cached list immediately, then replace it with the chain's.
+  ///
+  /// The CHAIN is the source of truth: `KYCRegistry.grantsOf` returns the guest
+  /// list with each row's status already resolved, so this screen is correct on
+  /// a device that has never seen the account. The local cache exists only so
+  /// the list is on screen before the RPC round-trip completes.
   Future<void> _restoreList() async {
     final owner = _wallet.address;
     if (owner == null) return;
     _loadedOwner = owner;
-    final saved = await _listStore.load(owner);
+
+    final cached = await _listStore.load(owner);
     // Guard against an account switch that landed while this read was in
     // flight — otherwise the previous account's list would be applied.
-    if (!mounted || owner != _wallet.address || saved.isEmpty) return;
-    setState(() {
-      for (final v in saved) {
-        if (!_verifiers.contains(v)) _verifiers.add(v);
-      }
-    });
-    await _refreshAll();
+    if (!mounted || owner != _wallet.address) return;
+    if (cached.isNotEmpty) {
+      setState(() {
+        for (final v in cached) {
+          if (!_verifiers.contains(v)) _verifiers.add(v);
+        }
+      });
+    }
+    await _syncFromChain();
+  }
+
+  /// Replace the list with what the registry actually holds.
+  Future<void> _syncFromChain() async {
+    final owner = _wallet.address;
+    if (owner == null) return;
+    setState(() => _refreshing = true);
+    try {
+      final grants = await _flow.listGrants(owner);
+      if (!mounted || owner != _wallet.address) return;
+      setState(() {
+        _verifiers
+          ..clear()
+          ..addAll(grants.map((g) => g.address));
+        _state
+          ..clear()
+          ..addEntries(grants.map((g) => MapEntry(g.address, g)));
+      });
+      // Keep the cache aligned so the next open paints the right rows.
+      await _listStore.save(owner, _verifiers);
+    } catch (_) {
+      // Chain unreachable — leave the cached rows visible rather than blanking
+      // the screen, but they are flagged as unverified by _accessLabel.
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
   }
 
   @override
@@ -116,45 +146,52 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       // Persist immediately, so the row survives leaving this screen even if
       // the user never gets as far as granting.
       _listStore.add(owner, addr);
-      _refreshStatus(addr);
+      _syncFromChain();
     }
   }
 
-  /// Forget a row locally. Does NOT revoke — the on-chain grant is untouched,
-  /// so this warns when it would hide a live one.
+  /// Drop a verifier from the guest list ON-CHAIN.
+  ///
+  /// The contract refuses while the grant is live, so this is housekeeping and
+  /// can never be mistaken for revoking. A row that was only added locally
+  /// (never granted) is not on-chain at all, so it is just dropped from the
+  /// cache without a transaction.
   Future<void> _forget(String verifier) async {
     if (_hasLiveGrant(verifier)) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Remove from the list?'),
-          content: const Text(
-            'This verifier still has LIVE access on-chain. Removing them here '
-            'only hides the row on this device — it does not revoke anything, '
-            'and they can still read your documents.\n\n'
-            'Tap Revoke first if that is what you meant.',
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This verifier still has live access. Revoke first, then remove.',
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Hide anyway'),
-            ),
-          ],
         ),
       );
-      if (ok != true || !mounted) return;
+      return;
     }
+
     final owner = _wallet.address;
-    if (owner != null) await _listStore.remove(owner, verifier);
-    if (!mounted) return;
-    setState(() {
-      _verifiers.remove(verifier);
-      _state.remove(verifier);
-    });
+    final onChain = _state.containsKey(verifier);
+
+    if (!onChain) {
+      // Never granted — nothing on-chain to forget.
+      if (owner != null) await _listStore.remove(owner, verifier);
+      if (!mounted) return;
+      setState(() => _verifiers.remove(verifier));
+      return;
+    }
+
+    setState(() => _busyAddr = verifier);
+    try {
+      final tx = await _flow.forgetVerifier(verifier);
+      await _flow.awaitConfirmation(tx);
+      if (owner != null) await _listStore.remove(owner, verifier);
+      if (!mounted) return;
+      _showTx('Removed from your list', tx);
+      await _syncFromChain();
+    } catch (e) {
+      _showError(e);
+    } finally {
+      if (mounted) setState(() => _busyAddr = null);
+    }
   }
 
   Future<void> _grant(String verifier) async {
@@ -166,7 +203,7 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       await _flow.awaitConfirmation(tx);
       if (!mounted) return;
       _showTx('Access granted', tx);
-      await _refreshStatus(verifier);
+      await _syncFromChain();
     } catch (e) {
       _showError(e);
     } finally {
@@ -181,38 +218,12 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       await _flow.awaitConfirmation(tx);
       if (!mounted) return;
       _showTx('Access revoked', tx);
-      await _refreshStatus(verifier);
+      await _syncFromChain();
     } catch (e) {
       _showError(e);
     } finally {
       if (mounted) setState(() => _busyAddr = null);
     }
-  }
-
-  /// Read the REAL on-chain grant for [verifier] and cache its expiry.
-  ///
-  /// The guest list itself is only a local convenience list of addresses the
-  /// user has typed; the chain is the source of truth for whether each one
-  /// actually holds access, so every row is backed by an `accessExpiry` read
-  /// rather than by whatever button was last tapped.
-  Future<void> _refreshStatus(String verifier) async {
-    try {
-      final state = await _flow.grantState(_wallet.address!, verifier);
-      if (!mounted) return;
-      setState(() => _state[verifier] = state);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _state.remove(verifier)); // unknown → show as unknown
-    }
-  }
-
-  Future<void> _refreshAll() async {
-    if (!_wallet.isConnected) return;
-    setState(() => _refreshing = true);
-    for (final v in List<String>.from(_verifiers)) {
-      await _refreshStatus(v);
-    }
-    if (mounted) setState(() => _refreshing = false);
   }
 
   /// Wrap the document key to a verifier's public key (ECIES).
@@ -323,20 +334,33 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
   }
 
   /// True when the chain says this verifier currently holds usable access.
-  bool _hasLiveGrant(String verifier) => _state[verifier]?.isLive ?? false;
+  bool _hasLiveGrant(String verifier) => _state[verifier]?.live ?? false;
+
+  /// A row is stale when the grant has NOT expired yet but is still not live.
+  ///
+  /// `hasAccess` is "unexpired AND version-current", so a future expiry that is
+  /// nonetheless dead can only mean the record version moved — i.e. the user
+  /// re-uploaded after granting. No extra chain read needed to tell them apart.
+  bool _isStale(String verifier) {
+    final s = _state[verifier];
+    return s != null &&
+        !s.live &&
+        s.expiresAt != null &&
+        s.expiresAt!.isAfter(DateTime.now());
+  }
 
   /// Human-readable on-chain access state for a row.
   String _accessLabel(String verifier) {
     final s = _state[verifier];
     if (s == null) return 'Access status unknown';
-    if (!s.exists) return 'No access';
-    // Staleness is reported before expiry: it is the more actionable of the
-    // two, and the fix is different (re-grant, not wait).
-    if (s.isStale) {
+    if (s.expiresAt == null) return 'No access (revoked)';
+    if (_isStale(verifier)) {
+      // Reported before expiry: it is the more actionable of the two, and the
+      // fix is different (re-grant, not wait).
       return 'Lapsed — you re-uploaded since granting. Grant again to '
           're-share.';
     }
-    if (s.isExpired) return 'Access expired';
+    if (!s.live) return 'Access expired';
     final left = s.expiresAt!.difference(DateTime.now());
     if (left.inDays >= 1) {
       return 'Access until ${_fmtDate(s.expiresAt!)} (${left.inDays}d left)';
@@ -395,7 +419,7 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
             onPressed:
                 (!connected || _refreshing || _verifiers.isEmpty)
                     ? null
-                    : _refreshAll,
+                    : _syncFromChain,
             icon: _refreshing
                 ? const SizedBox(
                     width: 18,
@@ -512,7 +536,7 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
                                           style: TextStyle(
                                             color: _hasLiveGrant(v)
                                                 ? p.success
-                                                : (_state[v]?.isStale ?? false)
+                                                : _isStale(v)
                                                     ? p.warning
                                                     : p.muted,
                                             fontSize: 12.5,

@@ -122,6 +122,24 @@ void main() {
     expect(data.length, equals(4 + 32));
   });
 
+  test('encodeForgetVerifier matches forgetVerifier(address) selector', () {
+    final abiWithForget = abi.replaceFirst(
+      '[',
+      '[{"type":"function","name":"forgetVerifier","stateMutability":"nonpayable",'
+          '"inputs":[{"name":"verifier","type":"address"}],"outputs":[]},',
+    );
+    final svc =
+        KycContractService.fromAbiString(abiWithForget, address: address);
+    final verifier =
+        EthereumAddress.fromHex('0x4444444444444444444444444444444444444444');
+    final data = svc.encodeForgetVerifier(verifier);
+    expect(
+      data.sublist(0, 4),
+      equals(selectorOf('forgetVerifier(address)')),
+    );
+    expect(data.length, equals(4 + 32));
+  });
+
   test('read calls without a client throw a clear error', () async {
     await expectLater(
       service.hasAccess(

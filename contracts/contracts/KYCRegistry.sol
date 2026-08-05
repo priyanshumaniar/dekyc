@@ -39,6 +39,24 @@ contract KYCRegistry is Ownable {
     ///      re-grant against the new bundle.
     mapping(address => mapping(address => uint32)) private _grantVersion;
 
+    /// @dev user => the DISTINCT verifiers they have ever granted.
+    ///
+    ///      A Solidity mapping cannot be enumerated, so without this list
+    ///      "who can see my documents?" is unanswerable from contract state —
+    ///      the client would have to replay `AccessGranted` logs (which needs an
+    ///      archive-capable RPC; free tiers cap `eth_getLogs` to a handful of
+    ///      blocks) or keep its own copy on the device, which is lost the moment
+    ///      the user clears storage or switches machine.
+    ///
+    ///      Unbounded growth is safe HERE, unlike the soulbound token's issuer
+    ///      list: `grantAccess` is `msg.sender`-scoped, so only the user can
+    ///      append to their own list. There is no third party to spam it.
+    ///      [forgetVerifier] lets them prune it, and [grantsOf] is paginated.
+    mapping(address => address[]) private _verifierList;
+
+    /// @dev user => verifier => 1-based index into `_verifierList`. 0 = absent.
+    mapping(address => mapping(address => uint256)) private _verifierIndex;
+
     event KYCSubmitted(
         address indexed user,
         string cid,
@@ -53,6 +71,15 @@ contract KYCRegistry is Ownable {
         uint32 version
     );
     event AccessRevoked(address indexed user, address indexed verifier);
+    event VerifierForgotten(address indexed user, address indexed verifier);
+
+    /// A (verifier, grant) pair as returned by [grantsOf].
+    struct GrantInfo {
+        address verifier;
+        uint256 expiresAt; // 0 = revoked / never granted
+        uint32 grantedVersion; // record version the grant was issued against
+        bool live; // mirrors hasAccess: unexpired AND version-current
+    }
 
     error EmptyCID();
     error NoKYCRecord(address user);
@@ -60,6 +87,9 @@ contract KYCRegistry is Ownable {
     error InvalidExpiry(uint256 expiresAt);
     error ZeroVerifier();
     error SelfGrant();
+    error NotListed(address verifier);
+    error GrantStillLive(address verifier);
+    error BadRange(uint256 start, uint256 end);
 
     constructor() Ownable(msg.sender) {}
 
@@ -102,7 +132,43 @@ contract KYCRegistry is Ownable {
         if (!_records[msg.sender].exists) revert NoKYCRecord(msg.sender);
         _accessExpiry[msg.sender][verifier] = expiresAt;
         _grantVersion[msg.sender][verifier] = version;
+
+        // Record the verifier once, so the user can enumerate their own guest
+        // list later. Costs an extra SSTORE pair on the FIRST grant to a given
+        // verifier only; re-granting or renewing is unchanged.
+        if (_verifierIndex[msg.sender][verifier] == 0) {
+            _verifierList[msg.sender].push(verifier);
+            _verifierIndex[msg.sender][verifier] =
+                _verifierList[msg.sender].length; // 1-based
+        }
+
         emit AccessGranted(msg.sender, verifier, expiresAt, version);
+    }
+
+    /// @notice Drop `verifier` from the caller's guest list entirely.
+    /// @dev    Housekeeping only — it does NOT revoke. Refuses while the grant
+    ///         is still live, so "tidy up the list" can never be mistaken for
+    ///         "cut off their access": revoke first, then forget.
+    function forgetVerifier(address verifier) external {
+        uint256 idx = _verifierIndex[msg.sender][verifier];
+        if (idx == 0) revert NotListed(verifier);
+        if (hasAccess(msg.sender, verifier)) revert GrantStillLive(verifier);
+
+        address[] storage list = _verifierList[msg.sender];
+        uint256 lastPos = list.length;
+        if (idx != lastPos) {
+            // Swap-and-pop: move the tail entry into the freed slot and fix its
+            // index, so removal stays O(1) instead of shifting the array.
+            address moved = list[lastPos - 1];
+            list[idx - 1] = moved;
+            _verifierIndex[msg.sender][moved] = idx;
+        }
+        list.pop();
+        delete _verifierIndex[msg.sender][verifier];
+        delete _accessExpiry[msg.sender][verifier];
+        delete _grantVersion[msg.sender][verifier];
+
+        emit VerifierForgotten(msg.sender, verifier);
     }
 
     /// @notice Revoke `verifier`'s access to the caller's KYC immediately.
@@ -162,6 +228,50 @@ contract KYCRegistry is Ownable {
         address verifier
     ) external view returns (uint256) {
         return _accessExpiry[user][verifier];
+    }
+
+    /// @notice How many DISTINCT verifiers `user` has ever granted.
+    /// @dev    The page bound for [grantsOf].
+    function verifierCount(address user) external view returns (uint256) {
+        return _verifierList[user].length;
+    }
+
+    /// @notice The caller's guest list over the window `[start, end)`, with
+    ///         each entry's live status resolved.
+    ///
+    /// @dev    One call replaces the 3-per-verifier round trip
+    ///         (accessExpiry + grantVersion + hasAccess) the client would
+    ///         otherwise need, and makes the guest list readable from any
+    ///         device with no indexer, backend or local storage.
+    ///
+    ///         `end` is clamped to the list length, so passing a large `end` is
+    ///         safe; reverts only if `start > end`.
+    ///
+    ///         PRIVACY: this is public, like the `AccessGranted` events it
+    ///         mirrors. The chain already reveals which verifiers a user
+    ///         granted — this exposes nothing new, it only makes the user's own
+    ///         list as easy for them to read as it already is for everyone
+    ///         else.
+    function grantsOf(
+        address user,
+        uint256 start,
+        uint256 end
+    ) external view returns (GrantInfo[] memory page) {
+        address[] storage list = _verifierList[user];
+        uint256 len = list.length;
+        if (end > len) end = len;
+        if (start > end) revert BadRange(start, end);
+
+        page = new GrantInfo[](end - start);
+        for (uint256 i = start; i < end; i++) {
+            address v = list[i];
+            page[i - start] = GrantInfo({
+                verifier: v,
+                expiresAt: _accessExpiry[user][v],
+                grantedVersion: _grantVersion[user][v],
+                live: hasAccess(user, v)
+            });
+        }
     }
 
     /// @notice Whether `user` has ever submitted a KYC record.

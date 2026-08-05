@@ -324,8 +324,23 @@ async function main() {
   if (reRead[0] !== newCid) throw new Error("FAIL: re-grant did not restore access");
   console.log("    ✓ re-granting against the new version restores access");
 
+  // --- 10b. guest-list enumeration -----------------------------------------
+  step(11, "Guest list is readable FROM THE CHAIN (no local storage, no indexer)");
+  console.log(`    verifierCount = ${await registry.verifierCount(user.address)}`);
+  const listed = await registry.grantsOf(user.address, 0, 100);
+  for (const row of listed) {
+    console.log(
+      `    ${row.verifier}  live=${row.live}  expiresAt=${row.expiresAt}  ` +
+        `grantedV=${row.grantedVersion}`
+    );
+  }
+  if (!listed.some((r: any) => r.verifier === verifier.address)) {
+    throw new Error("FAIL: granted verifier missing from grantsOf");
+  }
+  console.log("    ✓ the verifier we granted appears in the on-chain list");
+
   // --- 11. revoke -----------------------------------------------------------
-  step(11, "revokeAccess(verifier)");
+  step(12, "revokeAccess(verifier)");
   tx = await registry.revokeAccess(verifier.address);
   rc = await tx.wait();
   console.log(`    ✓ mined in block ${rc!.blockNumber}`);
@@ -335,8 +350,33 @@ async function main() {
   }
   console.log("    ✓ verifier read reverts again after revoke");
 
-  // --- 11. soulbound badge --------------------------------------------------
-  step(12, "Mint a soulbound badge to a fresh subject");
+  // --- 12b. prune the list --------------------------------------------------
+  step(13, "forgetVerifier prunes the list — and refuses while a grant is live");
+  // Re-grant so there is a LIVE grant for it to refuse on.
+  tx = await registry.grantAccess(verifier.address, expiresAt);
+  await tx.wait();
+  try {
+    await registry.forgetVerifier.staticCall(verifier.address);
+    throw new Error("FAIL: forgetVerifier succeeded on a live grant");
+  } catch (e: any) {
+    if (String(e.message).includes("FAIL:")) throw e;
+    console.log("    ✓ refused while the grant is live (GrantStillLive)");
+  }
+
+  tx = await registry.revokeAccess(verifier.address);
+  await tx.wait();
+  const countBefore = await registry.verifierCount(user.address);
+  tx = await registry.forgetVerifier(verifier.address);
+  await tx.wait();
+  const countAfter = await registry.verifierCount(user.address);
+  console.log(`    verifierCount ${countBefore} -> ${countAfter}`);
+  if (countAfter !== countBefore - 1n) {
+    throw new Error("FAIL: forgetVerifier did not prune the list");
+  }
+  console.log("    ✓ pruned once revoked");
+
+  // --- 13. soulbound badge --------------------------------------------------
+  step(14, "Mint a soulbound badge to a fresh subject");
   const subject = ethers.Wallet.createRandom().address;
   const before = await sbt.validBadgeCount(subject);
   tx = await sbt.attest(subject, Math.floor(Date.now() / 1000) + 86400, "ipfs://dekyc-e2e");
@@ -348,7 +388,7 @@ async function main() {
   console.log(`    validBadgeCount ${before} -> ${await sbt.validBadgeCount(subject)}`);
   console.log(`    locked(${tokenId}) = ${await sbt.locked(tokenId)}`);
 
-  step(13, "Soulbound enforcement on the LIVE contract");
+  step(15, "Soulbound enforcement on the LIVE contract");
   if (!(await reverts(sbt, "approve", [user.address, tokenId], subject))) {
     throw new Error("FAIL: approve succeeded on a soulbound token");
   }

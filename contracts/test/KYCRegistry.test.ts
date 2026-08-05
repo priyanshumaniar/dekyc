@@ -368,6 +368,167 @@ describe("KYCRegistry", () => {
     });
   });
 
+  describe("guest-list enumeration", () => {
+    let expiresAt: number;
+
+    beforeEach(async () => {
+      await registry.connect(user).submitKYC(CID_1, DOC_HASH);
+      expiresAt = (await time.latest()) + ONE_HOUR;
+    });
+
+    it("25. a fresh user has an empty list", async () => {
+      expect(await registry.verifierCount(user.address)).to.equal(0n);
+      expect(await registry.grantsOf(user.address, 0, 10)).to.deep.equal([]);
+    });
+
+    it("26. granting records the verifier, exactly once", async () => {
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      expect(await registry.verifierCount(user.address)).to.equal(1n);
+
+      // Re-granting (a renewal) must not duplicate the entry.
+      await registry.connect(user).grantAccess(verifier.address, expiresAt + 60);
+      expect(await registry.verifierCount(user.address)).to.equal(1n);
+    });
+
+    it("27. grantsOf returns each verifier with its live status resolved",
+      async () => {
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(user).grantAccess(verifier2.address, expiresAt);
+
+      const page = await registry.grantsOf(user.address, 0, 10);
+      expect(page.length).to.equal(2);
+
+      expect(page[0].verifier).to.equal(verifier.address);
+      expect(page[0].expiresAt).to.equal(BigInt(expiresAt));
+      expect(page[0].grantedVersion).to.equal(1);
+      expect(page[0].live).to.equal(true);
+      expect(page[1].verifier).to.equal(verifier2.address);
+      expect(page[1].live).to.equal(true);
+    });
+
+    it("28. a revoked verifier stays listed but reads as not live", async () => {
+      // The row must survive revocation so the UI can still show the history —
+      // this is exactly the state that used to vanish from the client.
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(user).revokeAccess(verifier.address);
+
+      expect(await registry.verifierCount(user.address)).to.equal(1n);
+      const [row] = await registry.grantsOf(user.address, 0, 10);
+      expect(row.verifier).to.equal(verifier.address);
+      expect(row.expiresAt).to.equal(0n);
+      expect(row.live).to.equal(false);
+    });
+
+    it("29. a stale (re-uploaded) grant stays listed and reads as not live",
+      async () => {
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(user).submitKYC(CID_2, DOC_HASH); // version bump
+
+      const [row] = await registry.grantsOf(user.address, 0, 10);
+      expect(row.live).to.equal(false);
+      // The expiry is untouched — it is the VERSION that lapsed, and the row
+      // carries enough to tell the user which.
+      expect(row.expiresAt).to.equal(BigInt(expiresAt));
+      expect(row.grantedVersion).to.equal(1);
+      expect(await registry.recordVersion(user.address)).to.equal(2);
+    });
+
+    it("30. grantsOf pages, clamps a large end, and rejects an inverted window",
+      async () => {
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(user).grantAccess(verifier2.address, expiresAt);
+      await registry.connect(user).grantAccess(stranger.address, expiresAt);
+
+      expect((await registry.grantsOf(user.address, 0, 2)).length).to.equal(2);
+      expect((await registry.grantsOf(user.address, 2, 3)).length).to.equal(1);
+      expect((await registry.grantsOf(user.address, 0, 999)).length).to.equal(3);
+      expect((await registry.grantsOf(user.address, 3, 3)).length).to.equal(0);
+      await expect(
+        registry.grantsOf(user.address, 2, 1)
+      ).to.be.revertedWithCustomError(registry, "BadRange");
+    });
+
+    it("31. forgetVerifier removes a revoked entry and emits", async () => {
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(user).revokeAccess(verifier.address);
+
+      await expect(registry.connect(user).forgetVerifier(verifier.address))
+        .to.emit(registry, "VerifierForgotten")
+        .withArgs(user.address, verifier.address);
+
+      expect(await registry.verifierCount(user.address)).to.equal(0n);
+      expect(await registry.grantsOf(user.address, 0, 10)).to.deep.equal([]);
+    });
+
+    it("32. forgetVerifier REFUSES while the grant is still live", async () => {
+      // Tidying the list must never be mistakable for revoking access.
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await expect(registry.connect(user).forgetVerifier(verifier.address))
+        .to.be.revertedWithCustomError(registry, "GrantStillLive")
+        .withArgs(verifier.address);
+      expect(await registry.verifierCount(user.address)).to.equal(1n);
+    });
+
+    it("33. forgetVerifier rejects an address that was never listed", async () => {
+      await expect(registry.connect(user).forgetVerifier(stranger.address))
+        .to.be.revertedWithCustomError(registry, "NotListed")
+        .withArgs(stranger.address);
+    });
+
+    it("34. swap-and-pop keeps every remaining index correct", async () => {
+      // Removing from the middle moves the tail entry into the hole. If the
+      // moved entry's index is not fixed, a later forget corrupts the list.
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(user).grantAccess(verifier2.address, expiresAt);
+      await registry.connect(user).grantAccess(stranger.address, expiresAt);
+
+      // Drop the FIRST entry; `stranger` should slide into slot 0.
+      await registry.connect(user).revokeAccess(verifier.address);
+      await registry.connect(user).forgetVerifier(verifier.address);
+
+      let page = await registry.grantsOf(user.address, 0, 10);
+      expect(page.length).to.equal(2);
+      expect(page.map((r: any) => r.verifier).sort()).to.deep.equal(
+        [stranger.address, verifier2.address].sort()
+      );
+
+      // Now forget the moved entry — only correct if its index was updated.
+      await registry.connect(user).revokeAccess(stranger.address);
+      await registry.connect(user).forgetVerifier(stranger.address);
+
+      page = await registry.grantsOf(user.address, 0, 10);
+      expect(page.length).to.equal(1);
+      expect(page[0].verifier).to.equal(verifier2.address);
+      expect(page[0].live).to.equal(true);
+    });
+
+    it("35. re-granting after forgetting re-adds the verifier once", async () => {
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(user).revokeAccess(verifier.address);
+      await registry.connect(user).forgetVerifier(verifier.address);
+      expect(await registry.verifierCount(user.address)).to.equal(0n);
+
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      expect(await registry.verifierCount(user.address)).to.equal(1n);
+      const [row] = await registry.grantsOf(user.address, 0, 10);
+      expect(row.live).to.equal(true);
+    });
+
+    it("36. lists are per-user — one user cannot see another's guest list",
+      async () => {
+      await registry.connect(user).grantAccess(verifier.address, expiresAt);
+      await registry.connect(stranger).submitKYC(CID_2, DOC_HASH);
+      await registry.connect(stranger).grantAccess(verifier2.address, expiresAt);
+
+      expect(await registry.verifierCount(user.address)).to.equal(1n);
+      expect(await registry.verifierCount(stranger.address)).to.equal(1n);
+      expect((await registry.grantsOf(user.address, 0, 10))[0].verifier)
+        .to.equal(verifier.address);
+      expect((await registry.grantsOf(stranger.address, 0, 10))[0].verifier)
+        .to.equal(verifier2.address);
+    });
+  });
+
   describe("unauthorized reads", () => {
     it("9. a stranger cannot read another user's KYC", async () => {
       await registry.connect(user).submitKYC(CID_1, DOC_HASH);

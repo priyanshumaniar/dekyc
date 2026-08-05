@@ -73,6 +73,11 @@ class KycContractService {
     return fn.encodeCall([verifier]);
   }
 
+  Uint8List encodeForgetVerifier(EthereumAddress verifier) {
+    final fn = _contract.function('forgetVerifier');
+    return fn.encodeCall([verifier]);
+  }
+
   // ---------------------------------------------------------------------------
   // Read calls
   // ---------------------------------------------------------------------------
@@ -147,6 +152,53 @@ class KycContractService {
     return (result.first as BigInt).toInt();
   }
 
+  /// How many distinct verifiers [user] has ever granted.
+  Future<int> verifierCount(EthereumAddress user) async {
+    final fn = _contract.function('verifierCount');
+    final result = await _requireClient()
+        .call(contract: _contract, function: fn, params: [user]);
+    return (result.first as BigInt).toInt();
+  }
+
+  /// [user]'s guest list, read straight from the chain.
+  ///
+  /// One paged call per [pageSize] verifiers, each row already carrying its
+  /// resolved live status — so the screen needs no local bookkeeping and works
+  /// identically on a device that has never seen this account before.
+  Future<List<VerifierGrant>> grantsOf(
+    EthereumAddress user, {
+    int pageSize = 50,
+  }) async {
+    final client = _requireClient();
+    final total = await verifierCount(user);
+    if (total == 0) return const [];
+
+    final fn = _contract.function('grantsOf');
+    final out = <VerifierGrant>[];
+    for (var start = 0; start < total; start += pageSize) {
+      final end = (start + pageSize) > total ? total : start + pageSize;
+      final result = await client.call(
+        contract: _contract,
+        function: fn,
+        params: [user, BigInt.from(start), BigInt.from(end)],
+      );
+      // A dynamic array of tuples decodes to List<List<dynamic>>.
+      for (final row in (result.first as List)) {
+        final fields = row as List;
+        final expiry = (fields[1] as BigInt).toInt();
+        out.add(VerifierGrant(
+          verifier: fields[0] as EthereumAddress,
+          expiresAt: expiry == 0
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(expiry * 1000),
+          grantedVersion: (fields[2] as BigInt).toInt(),
+          live: fields[3] as bool,
+        ));
+      }
+    }
+    return out;
+  }
+
   Web3Client _requireClient() {
     final c = _client;
     if (c == null) {
@@ -154,6 +206,29 @@ class KycContractService {
     }
     return c;
   }
+}
+
+/// One row of a user's on-chain guest list.
+class VerifierGrant {
+  const VerifierGrant({
+    required this.verifier,
+    required this.expiresAt,
+    required this.grantedVersion,
+    required this.live,
+  });
+
+  final EthereumAddress verifier;
+
+  /// Null when revoked or never granted.
+  final DateTime? expiresAt;
+
+  /// Record version this grant was issued against.
+  final int grantedVersion;
+
+  /// Mirrors `KYCRegistry.hasAccess` — unexpired AND version-current.
+  final bool live;
+
+  String get address => verifier.hexEip55;
 }
 
 /// Decoded on-chain KYC pointer.
