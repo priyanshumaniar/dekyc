@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
 
+import '../services/external_link.dart';
 import '../services/wallet_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/components.dart';
@@ -80,13 +82,22 @@ class _WalletConnectScreenState extends State<WalletConnectScreen> {
 
   Future<void> _openInWallet(String scheme) async {
     final uri = _uri;
-    if (uri == null) return;
-    final encoded = Uri.encodeComponent(uri);
-    final deeplink = Uri.parse('$scheme$encoded');
-    if (await canLaunchUrl(deeplink)) {
-      await launchUrl(deeplink, mode: LaunchMode.externalApplication);
+    if (uri == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No pairing URI yet — tap Connect first.')),
+      );
+      return;
     }
+    await ExternalLink.open(context, '$scheme${Uri.encodeComponent(uri)}');
   }
+
+  /// Wallet deep links (`metamask://`, `trust://`, …) are only registered by
+  /// the mobile apps. On web and desktop the buttons could never do anything,
+  /// so we don't render them there — the QR code is the path instead.
+  static bool get _deepLinksSupported =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   @override
   Widget build(BuildContext context) {
@@ -201,16 +212,24 @@ class _WalletConnectScreenState extends State<WalletConnectScreen> {
                       label: const Text('Copy URI'),
                     ),
                     const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      alignment: WrapAlignment.center,
-                      children: [
-                        _walletButton('MetaMask', 'metamask://wc?uri='),
-                        _walletButton('Trust', 'trust://wc?uri='),
-                        _walletButton('Rainbow', 'rainbow://wc?uri='),
-                      ],
-                    ),
+                    if (_deepLinksSupported)
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        alignment: WrapAlignment.center,
+                        children: [
+                          _walletButton('MetaMask', 'metamask://wc?uri='),
+                          _walletButton('Trust', 'trust://wc?uri='),
+                          _walletButton('Rainbow', 'rainbow://wc?uri='),
+                        ],
+                      )
+                    else
+                      Text(
+                        'Scan the QR with your phone\'s wallet app, or copy the '
+                        'URI into it.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: p.muted, fontSize: 12.5),
+                      ),
                     if (_connecting) ...[
                       const SizedBox(height: 20),
                       Text('Waiting for wallet approval…',

@@ -18,7 +18,9 @@ void main() {
      "inputs":[{"name":"issuer","type":"address"},{"name":"subject","type":"address"}],
      "outputs":[{"name":"","type":"bool"}]},
     {"type":"function","name":"balanceOf","stateMutability":"view",
-     "inputs":[{"name":"owner","type":"address"}],"outputs":[{"name":"","type":"uint256"}]}
+     "inputs":[{"name":"owner","type":"address"}],"outputs":[{"name":"","type":"uint256"}]},
+    {"type":"function","name":"validBadgeCount","stateMutability":"view",
+     "inputs":[{"name":"subject","type":"address"}],"outputs":[{"name":"n","type":"uint256"}]}
   ]
   ''';
 
@@ -43,6 +45,25 @@ void main() {
       data.sublist(0, 4),
       equals(selectorOf('attest(address,uint64,string)')),
     );
+  });
+
+  test('encodeAttest encodes expiry in SECONDS, not milliseconds', () {
+    // `attest` takes a uint64. Passing milliseconds still fits, so the
+    // selector and length stay identical while every minted badge silently
+    // becomes effectively permanent — exactly what a soulbound credential
+    // must not be.
+    final subject =
+        EthereumAddress.fromHex('0x2222222222222222222222222222222222222222');
+    final data = service.encodeAttest(
+      subject,
+      DateTime.fromMillisecondsSinceEpoch(1900000000 * 1000),
+      'ipfs://x',
+    );
+    var expiry = BigInt.zero;
+    for (final b in data.sublist(4 + 32, 4 + 64)) {
+      expiry = (expiry << 8) | BigInt.from(b);
+    }
+    expect(expiry, equals(BigInt.from(1900000000)));
   });
 
   test('encodeRevokeAttestation matches revokeAttestation(address) selector',

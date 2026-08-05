@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../config/chain_config.dart';
+import '../services/external_link.dart';
 import '../theme/app_theme.dart';
 import '../theme/components.dart';
 
@@ -93,6 +93,9 @@ class _OnChainCard extends StatelessWidget {
               const Text('Transaction',
                   style: TextStyle(fontWeight: FontWeight.w700)),
               const Spacer(),
+              // Truthful: this screen is only reached after
+              // KycFlowService.submitKyc has fetched the receipt and checked
+              // it did not revert, so the transaction really is mined.
               DeUI.statusChip(context, 'Confirmed', p.success),
             ],
           ),
@@ -120,12 +123,8 @@ class _OnChainCard extends StatelessWidget {
           ],
           const SizedBox(height: 14),
           OutlinedButton.icon(
-            onPressed: () async {
-              final uri = Uri.parse(ChainConfig.txUrl(txHash));
-              if (await canLaunchUrl(uri)) {
-                await launchUrl(uri, mode: LaunchMode.externalApplication);
-              }
-            },
+            onPressed: () =>
+                ExternalLink.open(context, ChainConfig.txUrl(txHash)),
             icon: const Icon(Icons.open_in_new, size: 18),
             label: const Text('View on Etherscan'),
           ),

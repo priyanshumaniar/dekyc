@@ -1,10 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:reown_walletkit/reown_walletkit.dart';
 
 import '../config/chain_config.dart';
+import '../config/env.dart';
 import 'injected_wallet.dart';
 
 /// Connects the app to a mobile wallet (MetaMask / Trust / Rainbow) over
@@ -86,8 +86,8 @@ class WalletService extends ChangeNotifier {
   /// Initialise the underlying Reown sign client. Safe to call repeatedly.
   Future<void> init() async {
     if (_client != null) return;
-    final projectId = dotenv.maybeGet('WALLETCONNECT_PROJECT_ID') ?? '';
-    if (projectId.isEmpty || projectId == 'YOUR_WALLETCONNECT_PROJECT_ID') {
+    final projectId = Env.get('WALLETCONNECT_PROJECT_ID');
+    if (!Env.has('WALLETCONNECT_PROJECT_ID')) {
       throw StateError(
         'WALLETCONNECT_PROJECT_ID is not set. Add it to your .env.',
       );
@@ -205,6 +205,17 @@ class WalletService extends ChangeNotifier {
         value: valueHex,
       );
     }
+    // WalletConnect path: the session was only accepted if it granted an
+    // account on `ChainConfig.caip2` (see awaitSession), and every request
+    // below is explicitly scoped to that chainId — so the wallet itself is the
+    // chain guard here, and it rejects the request if the chain is unavailable.
+    // Re-assert the invariant rather than assuming it still holds.
+    if (!_sessionHasSepolia(_session!)) {
+      throw StateError(
+        'This wallet session no longer includes the Sepolia network. '
+        'Disconnect and connect again with Sepolia enabled.',
+      );
+    }
     final tx = <String, dynamic>{
       'from': _address,
       'to': to,
@@ -253,25 +264,35 @@ class WalletService extends ChangeNotifier {
   /// the wrong chain — on mainnet that can burn real ETH on a contract
   /// address that means something else. Re-check and re-switch before every
   /// transaction; abort with a clear error if the wallet stays elsewhere.
+  /// Fails CLOSED. A guard that lets the transaction through when it cannot
+  /// read the chain id is not a guard — the case it must catch (a provider
+  /// misreporting or refusing to answer) is exactly the case where it used to
+  /// give up and proceed. If we cannot prove the wallet is on Sepolia, we
+  /// refuse to send.
   Future<void> _ensureSepoliaForTx() async {
-    String chain;
-    try {
-      chain = await _injected.currentChainHex();
-    } catch (_) {
-      return; // provider doesn't answer eth_chainId — let the tx proceed
-    }
+    String chain = await _readChainOrThrow();
     if (chain == _sepoliaHex) return;
+
     await _injected.ensureSepolia();
-    try {
-      chain = await _injected.currentChainHex();
-    } catch (_) {
-      return;
-    }
+
+    chain = await _readChainOrThrow();
     if (chain != _sepoliaHex) {
       throw StateError(
         'Wrong network: your wallet is on chain $chain, but DeKYC only '
         'works on Sepolia ($_sepoliaHex). Switch networks in MetaMask and '
         'try again.',
+      );
+    }
+  }
+
+  Future<String> _readChainOrThrow() async {
+    try {
+      return await _injected.currentChainHex();
+    } catch (e) {
+      throw StateError(
+        'Could not confirm which network your wallet is on '
+        '(eth_chainId failed: $e). Refusing to send a transaction that might '
+        'land on the wrong chain — reconnect your wallet and try again.',
       );
     }
   }

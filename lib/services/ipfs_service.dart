@@ -1,19 +1,26 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
+
+import '../config/env.dart';
 
 /// Pins encrypted KYC bundles to IPFS via Pinata and fetches them back.
 ///
 /// Only ciphertext is ever uploaded — plaintext documents never leave the
 /// device unencrypted. The returned CID is what gets stored on-chain.
 ///
-/// SECURITY NOTE (web): [PINATA_JWT] is read from `.env`, which Flutter bundles
-/// as an app asset — on the web build it is therefore downloadable by any
-/// visitor. There is no way to keep an API secret on a pure client. For
-/// production, pin through a thin backend proxy that holds the JWT and issues
-/// short-lived, scoped upload tokens; never ship the master JWT to the browser.
+/// Two pinning paths, in priority order:
+///
+///  1. `PINATA_PROXY_URL` — post ciphertext to the DeKYC pinning proxy (see
+///     `proxy/`), which holds the Pinata JWT server-side. **Use this for any
+///     web deployment.**
+///  2. `PINATA_JWT` — pin directly. Convenient for local development.
+///
+/// SECURITY NOTE (web): Flutter bundles `.env` as an app asset, so on a
+/// `flutter build web` deployment `PINATA_JWT` is downloadable by any visitor.
+/// A pure client cannot keep an API secret — that is what path 1 exists for.
 class IpfsService {
   IpfsService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -22,21 +29,28 @@ class IpfsService {
   static const String _pinEndpoint =
       'https://api.pinata.cloud/pinning/pinFileToIPFS';
 
-  String get _jwt => dotenv.maybeGet('PINATA_JWT') ?? '';
+  String get _jwt => Env.get('PINATA_JWT');
 
-  String get _gatewayHost =>
-      dotenv.maybeGet('PINATA_GATEWAY')?.trim().isNotEmpty == true
-          ? dotenv.get('PINATA_GATEWAY').trim()
-          : 'gateway.pinata.cloud';
+  String get _gatewayHost {
+    final host = Env.get('PINATA_GATEWAY');
+    return host.isNotEmpty ? host : 'gateway.pinata.cloud';
+  }
 
   /// Upload [bytes] (already encrypted) to Pinata. Returns the IPFS CID.
   Future<String> uploadBytes(
     Uint8List bytes, {
     String filename = 'dekyc_bundle.enc',
   }) async {
-    if (_jwt.isEmpty || _jwt == 'YOUR_PINATA_JWT') {
+    // Prefer the proxy: it holds the credential server-side, which is the only
+    // way a web build can pin without publishing the JWT to every visitor.
+    if (Env.has('PINATA_PROXY_URL')) {
+      return _uploadViaProxy(bytes, Env.get('PINATA_PROXY_URL'));
+    }
+
+    if (!Env.has('PINATA_JWT')) {
       throw StateError(
-        'PINATA_JWT is not set. Add it to your .env before uploading.',
+        'Neither PINATA_PROXY_URL nor PINATA_JWT is set. Add one to your .env '
+        'before uploading. See proxy/README.md.',
       );
     }
 
@@ -60,6 +74,38 @@ class IpfsService {
     final cid = body['IpfsHash'] as String?;
     if (cid == null || cid.isEmpty) {
       throw IpfsException('Pinata response missing IpfsHash: ${response.body}');
+    }
+    return cid;
+  }
+
+  /// Test seam for [_uploadViaProxy]. The production entry point picks the
+  /// path from `.env`, which unit tests do not load.
+  @visibleForTesting
+  Future<String> uploadViaProxyForTest(Uint8List bytes, String proxyUrl) =>
+      _uploadViaProxy(bytes, proxyUrl);
+
+  /// Pin through the DeKYC proxy (see `proxy/`), which holds the Pinata JWT.
+  /// The app sends only the ciphertext and never sees the credential.
+  Future<String> _uploadViaProxy(Uint8List bytes, String proxyUrl) async {
+    final uri = Uri.tryParse(proxyUrl);
+    if (uri == null || !uri.hasScheme) {
+      throw IpfsException('PINATA_PROXY_URL is not a valid URL: "$proxyUrl"');
+    }
+
+    final response = await _client.post(
+      uri,
+      headers: {'Content-Type': 'application/octet-stream'},
+      body: bytes,
+    );
+    if (response.statusCode != 200) {
+      throw IpfsException(
+        'Pinning proxy failed (${response.statusCode}): ${response.body}',
+      );
+    }
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final cid = body['IpfsHash'] as String?;
+    if (cid == null || cid.isEmpty) {
+      throw IpfsException('Proxy response missing IpfsHash: ${response.body}');
     }
     return cid;
   }

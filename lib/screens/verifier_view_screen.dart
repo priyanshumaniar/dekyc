@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../config/chain_config.dart';
+import '../services/key_wrap_service.dart';
 import '../services/kyc_flow_service.dart';
 import '../services/wallet_service.dart';
 import '../theme/app_theme.dart';
@@ -22,8 +23,19 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
   final WalletService _wallet = WalletService.instance;
   final KycFlowService _flow = KycFlowService();
   final TextEditingController _addrCtrl = TextEditingController();
+
+  /// Addresses the user has typed in. This is a local convenience list only —
+  /// the chain has no "list my verifiers" call, so we cannot enumerate grants.
   final List<String> _verifiers = [];
+
+  /// address → live on-chain grant state (absent = not yet read). This, not the
+  /// local list, is what the UI reports as access status.
+  final Map<String, GrantState> _state = {};
+
   String? _busyAddr;
+  bool _refreshing = false;
+
+  static const Duration _grantDuration = Duration(days: 7);
 
   @override
   void dispose() {
@@ -49,14 +61,21 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       if (!_verifiers.contains(addr)) _verifiers.add(addr);
       _addrCtrl.clear();
     });
+    // Immediately show whether this address ALREADY holds a grant, rather than
+    // implying "added" means "has access".
+    if (_wallet.isConnected) _refreshStatus(addr);
   }
 
   Future<void> _grant(String verifier) async {
     setState(() => _busyAddr = verifier);
     try {
-      final tx = await _flow.grantAccess(verifier, const Duration(days: 7));
+      final tx = await _flow.grantAccess(verifier, _grantDuration);
+      // Only claim the grant landed once it is actually mined — otherwise a
+      // reverted tx would leave the guest list showing access that isn't there.
+      await _flow.awaitConfirmation(tx);
       if (!mounted) return;
       _showTx('Access granted', tx);
+      await _refreshStatus(verifier);
     } catch (e) {
       _showError(e);
     } finally {
@@ -68,8 +87,10 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
     setState(() => _busyAddr = verifier);
     try {
       final tx = await _flow.revokeAccess(verifier);
+      await _flow.awaitConfirmation(tx);
       if (!mounted) return;
       _showTx('Access revoked', tx);
+      await _refreshStatus(verifier);
     } catch (e) {
       _showError(e);
     } finally {
@@ -77,31 +98,123 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
     }
   }
 
-  Future<void> _shareKey() async {
+  /// Read the REAL on-chain grant for [verifier] and cache its expiry.
+  ///
+  /// The guest list itself is only a local convenience list of addresses the
+  /// user has typed; the chain is the source of truth for whether each one
+  /// actually holds access, so every row is backed by an `accessExpiry` read
+  /// rather than by whatever button was last tapped.
+  Future<void> _refreshStatus(String verifier) async {
     try {
-      final key = await _flow.deriveUserKey();
-      final hex = key
-          .map((b) => b.toRadixString(16).padLeft(2, '0'))
-          .join();
+      final state = await _flow.grantState(_wallet.address!, verifier);
+      if (!mounted) return;
+      setState(() => _state[verifier] = state);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _state.remove(verifier)); // unknown → show as unknown
+    }
+  }
+
+  Future<void> _refreshAll() async {
+    if (!_wallet.isConnected) return;
+    setState(() => _refreshing = true);
+    for (final v in List<String>.from(_verifiers)) {
+      await _refreshStatus(v);
+    }
+    if (mounted) setState(() => _refreshing = false);
+  }
+
+  /// Wrap the document key to a verifier's public key (ECIES).
+  ///
+  /// Preferred over revealing the raw key: the blob produced here is readable
+  /// only by the holder of that verifier's private key, so it can safely cross
+  /// an ordinary channel (email, chat) that a bare key could not.
+  Future<void> _wrapKeyFor(String verifier) async {
+    final pubKey = await showDialog<String>(
+      context: context,
+      builder: (_) => const _WrappingKeyPrompt(),
+    );
+    if (pubKey == null || !mounted) return;
+
+    setState(() => _busyAddr = verifier);
+    try {
+      final wrapped = await _flow.wrapKeyForVerifier(pubKey);
       if (!mounted) return;
       showDialog(
         context: context,
         builder: (_) => AlertDialog(
-          title: const Text('Decryption key'),
+          title: const Text('Wrapped key ready'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Share this with the verifier over a secure channel so they '
-                'can decrypt your documents. The key — not the chain — is '
-                "what actually unlocks them, so only share it with someone "
-                'you granted access to.',
+                'Send this to the verifier. Only they can unwrap it, so it is '
+                'safe to send over an ordinary channel. It unlocks the bundle '
+                'you have uploaded — grant access on-chain as well, or they '
+                'still cannot read the pointer.',
               ),
               const SizedBox(height: 12),
-              SelectableText(hex, style: const TextStyle(fontSize: 12)),
+              SelectableText(wrapped,
+                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: wrapped));
+                Navigator.pop(context);
+              },
+              child: const Text('Copy'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      _showError(e);
+    } finally {
+      if (mounted) setState(() => _busyAddr = null);
+    }
+  }
+
+  /// Escape hatch: reveal the raw key. Kept because a verifier running an
+  /// older build has no wrapping key to offer, but it is deliberately the
+  /// secondary path and says why.
+  Future<void> _revealRawKey() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Reveal the raw key?'),
+        content: const Text(
+          'A raw key is readable by anyone who sees it — a screenshot, a chat '
+          'log, or a clipboard manager is enough, and revoking on-chain does '
+          'not take it back.\n\n'
+          'Prefer "Wrap key for…" on a verifier row, which encrypts the key so '
+          'only that verifier can read it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Reveal anyway'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    try {
+      final key = await _flow.deriveUserKey();
+      final hex = KeyWrapService.toHex(key);
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Decryption key (raw)'),
+          content: SelectableText(hex, style: const TextStyle(fontSize: 12)),
           actions: [
             TextButton(
               onPressed: () {
@@ -117,6 +230,33 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       _showError(e);
     }
   }
+
+  /// True when the chain says this verifier currently holds usable access.
+  bool _hasLiveGrant(String verifier) => _state[verifier]?.isLive ?? false;
+
+  /// Human-readable on-chain access state for a row.
+  String _accessLabel(String verifier) {
+    final s = _state[verifier];
+    if (s == null) return 'Access status unknown';
+    if (!s.exists) return 'No access';
+    // Staleness is reported before expiry: it is the more actionable of the
+    // two, and the fix is different (re-grant, not wait).
+    if (s.isStale) {
+      return 'Lapsed — you re-uploaded since granting. Grant again to '
+          're-share.';
+    }
+    if (s.isExpired) return 'Access expired';
+    final left = s.expiresAt!.difference(DateTime.now());
+    if (left.inDays >= 1) {
+      return 'Access until ${_fmtDate(s.expiresAt!)} (${left.inDays}d left)';
+    }
+    if (left.inHours >= 1) return 'Access expires in ${left.inHours}h';
+    return 'Access expires in ${left.inMinutes}m';
+  }
+
+  static String _fmtDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
 
   void _showTx(String title, String tx) {
     showDialog(
@@ -145,7 +285,25 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
     final p = context.pal;
     final connected = _wallet.isConnected;
     return Scaffold(
-      appBar: AppBar(title: const Text('Manage Access')),
+      appBar: AppBar(
+        title: const Text('Manage Access'),
+        actions: [
+          IconButton(
+            tooltip: 'Re-read access status from the chain',
+            onPressed:
+                (!connected || _refreshing || _verifiers.isEmpty)
+                    ? null
+                    : _refreshAll,
+            icon: _refreshing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+          ),
+        ],
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 640),
@@ -191,9 +349,9 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton.icon(
-                    onPressed: connected ? _shareKey : null,
+                    onPressed: connected ? _revealRawKey : null,
                     icon: const Icon(Icons.key, size: 18),
-                    label: const Text('Reveal decryption key'),
+                    label: const Text('Reveal raw key (not recommended)'),
                   ),
                 ),
                 Divider(color: p.hairline),
@@ -247,10 +405,17 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
                                               fontWeight: FontWeight.w700),
                                         ),
                                         const SizedBox(height: 2),
-                                        Text('Verifier',
-                                            style: TextStyle(
-                                                color: p.muted,
-                                                fontSize: 12.5)),
+                                        Text(
+                                          _accessLabel(v),
+                                          style: TextStyle(
+                                            color: _hasLiveGrant(v)
+                                                ? p.success
+                                                : (_state[v]?.isStale ?? false)
+                                                    ? p.warning
+                                                    : p.muted,
+                                            fontSize: 12.5,
+                                          ),
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -262,6 +427,14 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
                                           strokeWidth: 2),
                                     )
                                   else ...[
+                                    IconButton(
+                                      tooltip: 'Wrap my key for this verifier',
+                                      icon: Icon(Icons.enhanced_encryption,
+                                          color: p.accent),
+                                      onPressed: connected
+                                          ? () => _wrapKeyFor(v)
+                                          : null,
+                                    ),
                                     IconButton(
                                       tooltip: 'Grant 7-day access',
                                       icon: Icon(Icons.check_circle,
@@ -290,6 +463,80 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Collects a verifier's ECIES public key, validating it before the caller
+/// spends a wallet signature deriving the document key.
+class _WrappingKeyPrompt extends StatefulWidget {
+  const _WrappingKeyPrompt();
+
+  @override
+  State<_WrappingKeyPrompt> createState() => _WrappingKeyPromptState();
+}
+
+class _WrappingKeyPromptState extends State<_WrappingKeyPrompt> {
+  final TextEditingController _ctrl = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final text = _ctrl.text.trim();
+    // Validate here rather than after signing: an invalid key would otherwise
+    // cost the user a wallet popup before failing.
+    try {
+      if (!KeyWrapService.isValidPublicKey(KeyWrapService.fromHex(text))) {
+        throw ArgumentError('not a curve point');
+      }
+    } catch (_) {
+      setState(() => _error =
+          "That is not a valid wrapping key. It is 66 hex characters and "
+          "starts with 02 or 03 — copy it from the verifier's screen.");
+      return;
+    }
+    Navigator.pop(context, text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text("Verifier's wrapping key"),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Ask the verifier for the "wrapping key" shown on their KYC '
+            'Documents screen, then paste it here. Your document key is '
+            'encrypted to it, so only they can read it.',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            minLines: 1,
+            maxLines: 3,
+            decoration: InputDecoration(
+              labelText: 'Wrapping key (66 hex chars)',
+              errorText: _error,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        TextButton(onPressed: _submit, child: const Text('Wrap key')),
+      ],
     );
   }
 }

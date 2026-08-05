@@ -40,9 +40,19 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
     mapping(address => mapping(address => uint256)) private _tokenOf;
     /// @dev subject => the DISTINCT issuers who have ever attested to them. Used
     ///      to count valid badges without ERC721Enumerable. We track issuers
-    ///      (not tokenIds) and dedup each issuer, so a revoke+re-attest loop by
-    ///      the same issuer does NOT grow the list — that bounds validBadgeCount
-    ///      to the number of distinct issuers and prevents unbounded gas-grief.
+    ///      (not tokenIds) and dedup each issuer, so a revoke/re-attest/renew
+    ///      loop by the SAME issuer does not grow the list.
+    ///
+    ///      Scope of that guarantee: it bounds the list to the number of
+    ///      DISTINCT issuers — it does NOT make the list bounded outright,
+    ///      because `attest` is permissionless and anyone may become a new
+    ///      issuer. `validBadgeCount` is therefore O(distinct issuers) and a
+    ///      determined spammer funding many addresses can push it past an
+    ///      `eth_call` gas cap. Clients that must stay responsive under that
+    ///      condition should page via [subjectIssuerCount] +
+    ///      [validBadgeCountRange] instead of calling [validBadgeCount].
+    ///      A per-subject cap is deliberately NOT used: it would let a spammer
+    ///      fill the cap and lock out legitimate issuers, which is worse.
     mapping(address => address[]) private _subjectIssuers;
     mapping(address => mapping(address => bool)) private _isSubjectIssuer;
 
@@ -66,6 +76,7 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
     error NoAttestation(address issuer, address subject);
     error UnknownToken(uint256 tokenId);
     error Soulbound();
+    error BadRange(uint256 start, uint256 end);
 
     constructor() ERC721("DeKYC Verified", "DKYC") {}
 
@@ -82,8 +93,18 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
         if (subject == address(0)) revert ZeroSubject();
         if (subject == msg.sender) revert SelfAttest();
         if (expiresAt <= block.timestamp) revert InvalidExpiry();
-        if (_tokenOf[msg.sender][subject] != 0) {
-            revert AlreadyAttested(msg.sender, subject);
+
+        // RENEWAL: expiry alone never clears `_tokenOf` (an expired badge is
+        // not burned), so a naive `!= 0` guard would block an issuer from ever
+        // re-attesting after their badge lapsed — the normal renewal path for
+        // the 365-day badges this app mints. Reject only a STILL-VALID badge;
+        // recycle a dead one (expired or revoked) by burning it first.
+        uint256 existing = _tokenOf[msg.sender][subject];
+        if (existing != 0) {
+            if (isValid(existing)) revert AlreadyAttested(msg.sender, subject);
+            _attestations[existing].revoked = true;
+            delete _tokenOf[msg.sender][subject];
+            _burn(existing);
         }
 
         tokenId = _nextId++;
@@ -161,10 +182,39 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
     /// @dev    Permissionless attestation means this is a count, NOT a trust
     ///         score: anyone may mint a badge. Relying parties must check the
     ///         ISSUER of each badge (`isVerifiedBy`) against issuers they trust.
-    function validBadgeCount(address subject) external view returns (uint256 n) {
+    function validBadgeCount(address subject) external view returns (uint256) {
+        return _countRange(subject, 0, _subjectIssuers[subject].length);
+    }
+
+    /// @notice How many DISTINCT issuers have ever attested to `subject`.
+    /// @dev    The page bound for [validBadgeCountRange]. Cheap: one SLOAD.
+    function subjectIssuerCount(address subject) external view returns (uint256) {
+        return _subjectIssuers[subject].length;
+    }
+
+    /// @notice [validBadgeCount] over the issuer window `[start, end)`.
+    /// @dev    Lets a client page a subject with very many issuers instead of
+    ///         risking an out-of-gas `eth_call` on the unbounded variant.
+    ///         `end` is clamped to the list length, so passing a large `end` is
+    ///         safe. Reverts if `start > end`.
+    function validBadgeCountRange(
+        address subject,
+        uint256 start,
+        uint256 end
+    ) external view returns (uint256) {
+        return _countRange(subject, start, end);
+    }
+
+    function _countRange(
+        address subject,
+        uint256 start,
+        uint256 end
+    ) private view returns (uint256 n) {
         address[] storage issuers = _subjectIssuers[subject];
         uint256 len = issuers.length;
-        for (uint256 i = 0; i < len; i++) {
+        if (end > len) end = len;
+        if (start > end) revert BadRange(start, end);
+        for (uint256 i = start; i < end; i++) {
             uint256 tid = _tokenOf[issuers[i]][subject];
             if (tid != 0 && isValid(tid)) {
                 unchecked {
@@ -197,6 +247,21 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
         return
             interfaceId == type(IERC5192).interfaceId ||
             super.supportsInterface(interfaceId);
+    }
+
+    /// @dev A locked token must never advertise transfer authority. Blocking
+    ///      `_update` alone is not enough: without these overrides `approve`
+    ///      and `setApprovalForAll` still SUCCEED on a soulbound badge, so
+    ///      marketplaces and portfolio trackers read `getApproved` /
+    ///      `isApprovedForAll` and surface the badge as listable — it only
+    ///      fails later, at fill time. The EIP-5192 reference implementation
+    ///      guards both for exactly this reason.
+    function approve(address, uint256) public pure override {
+        revert Soulbound();
+    }
+
+    function setApprovalForAll(address, bool) public pure override {
+        revert Soulbound();
     }
 
     /// @dev Block transfers: permit only mint (from == 0) and burn (to == 0).

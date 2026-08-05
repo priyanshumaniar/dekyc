@@ -21,16 +21,30 @@
   <meta name="description" content="DeKYC — self-sovereign KYC on Ethereum. Encrypt once, verify anywhere.">
 
   <!--
-    Content-Security-Policy: defense-in-depth for the document renderer. The app
-    fetches encrypted bundles from an IPFS gateway (CID is untrusted on-chain
-    data) and renders decrypted PDFs in a blob: iframe. This policy contains that
-    surface: object-src 'none' kills <embed>/<object> abuse, base-uri 'self'
-    blocks <base> hijacking, and frame-src restricts iframes to our own blob:
-    previews. script-src/connect-src stay permissive because Flutter's CanvasKit
-    wasm bootstrap and the WalletConnect (wss) / RPC / Pinata (https) calls need
-    them — tighten these further only with a full runtime re-test.
+    Content-Security-Policy: defence-in-depth for the document renderer. The app
+    fetches encrypted bundles from an IPFS gateway (the CID is untrusted
+    on-chain data) and renders decrypted PDFs in a blob: iframe. This policy
+    contains that surface:
+      object-src 'none'   kills <embed>/<object> abuse
+      base-uri 'self'     blocks <base> hijacking
+      frame-src 'self' blob:  restricts iframes to our own previews
+    None of those depend on script-src, so the PDF-viewer containment holds
+    regardless of what follows.
+
+    Why script-src carries 'unsafe-inline':
+    Flutter's DEBUG bootstrap (`flutter run -d chrome`, DDC) loads the app via
+    an INLINE <script>. Without 'unsafe-inline' the browser blocks it and the
+    page renders permanently blank — i.e. the strict policy silently broke the
+    exact command the README tells contributors to run. Release builds do not
+    need it (their bootstrap only creates external <script src> tags, verified
+    against this policy), so a production deployment should drop it.
+
+    Recommended for production: build with `flutter build web --csp`, remove
+    this meta tag, and serve the policy as a real CSP response header without
+    'unsafe-inline' — a header is also the only place a per-request nonce can
+    be injected. A meta tag cannot do either.
   -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: wss: data: blob:; frame-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: wss: data: blob:; frame-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">

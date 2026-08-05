@@ -126,6 +126,27 @@ class KycContractService {
     return ts == 0 ? null : DateTime.fromMillisecondsSinceEpoch(ts * 1000);
   }
 
+  /// How many times [user] has submitted KYC. 0 = never.
+  Future<int> recordVersion(EthereumAddress user) async {
+    final fn = _contract.function('recordVersion');
+    final result = await _requireClient()
+        .call(contract: _contract, function: fn, params: [user]);
+    return (result.first as BigInt).toInt();
+  }
+
+  /// The record version [verifier]'s grant was issued against. 0 = no grant.
+  /// A value that differs from [recordVersion] means the user re-uploaded
+  /// after granting, which lapses the grant on-chain.
+  Future<int> grantVersion(
+    EthereumAddress user,
+    EthereumAddress verifier,
+  ) async {
+    final fn = _contract.function('grantVersion');
+    final result = await _requireClient()
+        .call(contract: _contract, function: fn, params: [user, verifier]);
+    return (result.first as BigInt).toInt();
+  }
+
   Web3Client _requireClient() {
     final c = _client;
     if (c == null) {

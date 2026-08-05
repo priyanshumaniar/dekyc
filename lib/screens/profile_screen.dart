@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
+import '../services/external_link.dart';
 
 import '../config/chain_config.dart';
 import '../config/contract_address.dart';
@@ -104,12 +104,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<void> _openEtherscan(String address) async {
-    final uri = Uri.parse(ChainConfig.addressUrl(address));
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
-  }
+  Future<void> _openEtherscan(String address) =>
+      ExternalLink.open(context, ChainConfig.addressUrl(address));
 
   @override
   Widget build(BuildContext context) {

@@ -1,9 +1,10 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../config/chain_config.dart';
+import '../services/key_wrap_service.dart';
 import '../services/kyc_flow_service.dart';
+import '../services/transport_key_store.dart';
 import '../theme/app_theme.dart';
 import '../theme/components.dart';
 // Inline PDF viewer: real iframe-backed preview on web, placeholder elsewhere.
@@ -23,12 +24,34 @@ class AccessGranted extends StatefulWidget {
 class _AccessGrantedState extends State<AccessGranted> {
   final KycFlowService _flow = KycFlowService();
   final TextEditingController _keyCtrl = TextEditingController();
+  final TransportKeyStore _keyStore = TransportKeyStore();
+
+  /// This verifier's ECIES transport keypair — the public half is what the
+  /// user needs in order to wrap their document key to us.
+  WrapKeyPair? _transportKeys;
 
   bool _loading = false;
   String? _error;
   Map<String, Uint8List>? _docs;
 
+  @override
+  void initState() {
+    super.initState();
+    _loadTransportKeys();
+  }
+
+  Future<void> _loadTransportKeys() async {
+    try {
+      final keys = await _keyStore.loadOrCreate();
+      if (!mounted) return;
+      setState(() => _transportKeys = keys);
+    } catch (_) {
+      // Wrapping is unavailable; the legacy raw-key path still works.
+    }
+  }
+
   bool _attesting = false;
+  String _attestLabel = '';
   String? _attestTx;
 
   static const Map<String, String> _labels = {
@@ -47,7 +70,7 @@ class _AccessGrantedState extends State<AccessGranted> {
   Future<void> _load(String userAddress, String verifierAddress) async {
     final key = _keyCtrl.text.trim();
     if (key.isEmpty) {
-      setState(() => _error = 'Paste the decryption key shared by the user.');
+      setState(() => _error = 'Paste the wrapped key shared by the user.');
       return;
     }
     setState(() {
@@ -58,7 +81,8 @@ class _AccessGrantedState extends State<AccessGranted> {
       final docs = await _flow.readKyc(
         userAddress: userAddress,
         callerAddress: verifierAddress,
-        keyHex: key,
+        keyMaterial: key,
+        transportPrivateKey: _transportKeys?.privateKey,
       );
       // readKyc is a multi-second on-chain + IPFS + decrypt round-trip; the
       // verifier may navigate away before it resolves. Guard both branches so
@@ -140,10 +164,15 @@ class _AccessGrantedState extends State<AccessGranted> {
                 ),
                 const SizedBox(height: 14),
                 if (_docs == null) ...[
+                  _wrappingKeyCard(),
+                  const SizedBox(height: 14),
                   TextField(
                     controller: _keyCtrl,
+                    minLines: 1,
+                    maxLines: 3,
                     decoration: const InputDecoration(
-                      labelText: 'Decryption key (hex)',
+                      labelText: 'Wrapped key from the user',
+                      helperText: 'A bare 64-char key also works (legacy).',
                       prefixIcon: Icon(Icons.key_outlined),
                     ),
                   ),
@@ -178,10 +207,70 @@ class _AccessGrantedState extends State<AccessGranted> {
     );
   }
 
+  /// Step 1 for the verifier: hand this public key to the user so they can
+  /// encrypt their document key to us instead of sending it in the clear.
+  Widget _wrappingKeyCard() {
+    final p = context.pal;
+    final keys = _transportKeys;
+    return DeUI.card(
+      context,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.enhanced_encryption_outlined, size: 18, color: p.accent),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('Your wrapping key',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              if (keys != null)
+                TextButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: keys.publicKeyHex));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Wrapping key copied')),
+                    );
+                  },
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('Copy'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Send this to the user. They encrypt their document key to it, so '
+            'the key that travels back is useless to anyone but you. Safe to '
+            'share publicly — it is a public key.',
+            style: TextStyle(color: p.muted, fontSize: 12.5, height: 1.4),
+          ),
+          const SizedBox(height: 10),
+          if (keys == null)
+            Text('Preparing…', style: TextStyle(color: p.muted))
+          else
+            SelectableText(
+              keys.publicKeyHex,
+              style: const TextStyle(fontSize: 11.5, fontFamily: 'monospace'),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _attest(String subject) async {
-    setState(() => _attesting = true);
+    setState(() {
+      _attesting = true;
+      _attestLabel = 'Sign in your wallet…';
+    });
     try {
       final tx = await _flow.attestUser(subject);
+      if (!mounted) return;
+      // A hash means BROADCAST, not mined. Claiming success here would show
+      // "badge minted ✓" for a transaction that went on to revert.
+      setState(() => _attestLabel = 'Waiting for Sepolia to confirm…');
+      await _flow.awaitConfirmation(tx);
       if (!mounted) return;
       setState(() => _attestTx = tx);
       showDialog(
@@ -238,7 +327,7 @@ class _AccessGrantedState extends State<AccessGranted> {
             )
           : const Icon(Icons.verified_user, size: 20),
       label: Text(_attesting
-          ? 'Minting badge…'
+          ? _attestLabel
           : 'Mark as Verified (mint Soulbound proof)'),
     );
   }

@@ -17,6 +17,7 @@ contract KYCRegistry is Ownable {
         string cid; // IPFS CID of the encrypted KYC bundle
         bytes32 docTypeHash; // hash describing which doc types are included
         uint256 submittedAt; // block timestamp of the latest submission
+        uint32 version; // incremented on every submitKYC; 0 = never submitted
         bool exists; // whether this user has ever submitted
     }
 
@@ -26,16 +27,30 @@ contract KYCRegistry is Ownable {
     /// @dev user => verifier => unix timestamp at which access expires (0 = none)
     mapping(address => mapping(address => uint256)) private _accessExpiry;
 
+    /// @dev user => verifier => the record version the grant was issued against.
+    ///
+    ///      Consent is given for a SPECIFIC bundle. Without this, `submitKYC`
+    ///      would silently re-point every outstanding grant at the new bundle:
+    ///      a user who granted a bank access to their Aadhaar+PAN, then later
+    ///      re-uploaded a bundle that also contained a passport, would be
+    ///      exposing the passport to that bank with no new consent step and no
+    ///      event to notice. Binding the grant to the version means a re-upload
+    ///      invalidates outstanding grants and the user must deliberately
+    ///      re-grant against the new bundle.
+    mapping(address => mapping(address => uint32)) private _grantVersion;
+
     event KYCSubmitted(
         address indexed user,
         string cid,
         bytes32 docTypeHash,
-        uint256 submittedAt
+        uint256 submittedAt,
+        uint32 version
     );
     event AccessGranted(
         address indexed user,
         address indexed verifier,
-        uint256 expiresAt
+        uint256 expiresAt,
+        uint32 version
     );
     event AccessRevoked(address indexed user, address indexed verifier);
 
@@ -51,27 +66,43 @@ contract KYCRegistry is Ownable {
     /// @notice Store or update the caller's KYC pointer.
     /// @param cid IPFS CID of the encrypted bundle (must be non-empty).
     /// @param docTypeHash hash describing the included document types.
+    /// @dev Bumping `version` INVALIDATES every outstanding grant on this
+    ///      record — see `_grantVersion`. Verifiers must be re-granted against
+    ///      the new bundle. The new version is in the event so indexers can
+    ///      show which grants just lapsed.
     function submitKYC(string calldata cid, bytes32 docTypeHash) external {
         if (bytes(cid).length == 0) revert EmptyCID();
+        uint32 nextVersion = _records[msg.sender].version + 1;
         _records[msg.sender] = KYCRecord({
             cid: cid,
             docTypeHash: docTypeHash,
             submittedAt: block.timestamp,
+            version: nextVersion,
             exists: true
         });
-        emit KYCSubmitted(msg.sender, cid, docTypeHash, block.timestamp);
+        emit KYCSubmitted(
+            msg.sender,
+            cid,
+            docTypeHash,
+            block.timestamp,
+            nextVersion
+        );
     }
 
     /// @notice Grant `verifier` read access to the caller's KYC until `expiresAt`.
     /// @param verifier the verifier's wallet address.
     /// @param expiresAt unix timestamp after which access lapses (must be future).
+    /// @dev The grant is pinned to the CURRENT record version, so it covers the
+    ///      bundle the user can see right now and nothing they upload later.
     function grantAccess(address verifier, uint256 expiresAt) external {
         if (verifier == address(0)) revert ZeroVerifier();
         if (verifier == msg.sender) revert SelfGrant();
         if (expiresAt <= block.timestamp) revert InvalidExpiry(expiresAt);
+        uint32 version = _records[msg.sender].version;
         if (!_records[msg.sender].exists) revert NoKYCRecord(msg.sender);
         _accessExpiry[msg.sender][verifier] = expiresAt;
-        emit AccessGranted(msg.sender, verifier, expiresAt);
+        _grantVersion[msg.sender][verifier] = version;
+        emit AccessGranted(msg.sender, verifier, expiresAt, version);
     }
 
     /// @notice Revoke `verifier`'s access to the caller's KYC immediately.
@@ -82,18 +113,27 @@ contract KYCRegistry is Ownable {
         if (verifier == address(0)) revert ZeroVerifier();
         if (_accessExpiry[msg.sender][verifier] == 0) return;
         _accessExpiry[msg.sender][verifier] = 0;
+        delete _grantVersion[msg.sender][verifier];
         emit AccessRevoked(msg.sender, verifier);
     }
 
     /// @notice Whether `verifier` may currently read `user`'s KYC.
     /// @dev    A user always has access to their own record.
+    /// @dev    Expiry is EXCLUSIVE: at `block.timestamp == expiresAt` the grant
+    ///         has already lapsed. This matches `grantAccess`, which rejects
+    ///         `expiresAt <= block.timestamp`, and `KYCSoulboundToken.isValid`,
+    ///         which also uses a strict `>`. Both halves of the product
+    ///         therefore agree on the boundary second.
+    /// @dev Two conditions, both required: the grant is unexpired AND it was
+    ///      issued against the record version that is current now. A re-upload
+    ///      bumps the version and therefore lapses the grant.
     function hasAccess(
         address user,
         address verifier
     ) public view returns (bool) {
         if (verifier == user) return true;
-        uint256 expiry = _accessExpiry[user][verifier];
-        return expiry != 0 && expiry >= block.timestamp;
+        if (_accessExpiry[user][verifier] <= block.timestamp) return false;
+        return _grantVersion[user][verifier] == _records[user].version;
     }
 
     /// @notice Read `user`'s KYC pointer. Reverts unless the caller is the user
@@ -127,5 +167,22 @@ contract KYCRegistry is Ownable {
     /// @notice Whether `user` has ever submitted a KYC record.
     function hasRecord(address user) external view returns (bool) {
         return _records[user].exists;
+    }
+
+    /// @notice How many times `user` has submitted. 0 = never.
+    /// @dev    Public metadata: it reveals the number of re-uploads, not their
+    ///         contents. Clients compare it against [grantVersion] to explain
+    ///         *why* a grant lapsed ("you re-uploaded since granting").
+    function recordVersion(address user) external view returns (uint32) {
+        return _records[user].version;
+    }
+
+    /// @notice The record version a (user, verifier) grant was issued against.
+    ///         0 = no grant. Stale when it differs from [recordVersion].
+    function grantVersion(
+        address user,
+        address verifier
+    ) external view returns (uint32) {
+        return _grantVersion[user][verifier];
     }
 }

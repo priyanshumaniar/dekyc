@@ -18,6 +18,9 @@ migrate_working_dir/
 *.iws
 .idea/
 
+# Local agent/editor tooling config (machine-specific)
+.claude/
+
 # The .vscode folder contains launch configuration and tasks you configure in
 # VS Code which you may wish to be included in version control, so this line
 # is commented out by default.
@@ -44,13 +47,60 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# DeKYC — secrets & blockchain build artifacts (NEVER commit secrets)
+# ---------------------------------------------------------------------------
+# DeKYC — secrets (NEVER commit these)
+# ---------------------------------------------------------------------------
+# Patterns without a leading slash match at EVERY depth, so `.env` also covers
+# `contracts/.env`. The `!.env.example` negation must stay AFTER `.env.*`,
+# otherwise the committed placeholder templates would be ignored too.
 .env
-.env.local
-contracts/node_modules/
+.env.*
+!.env.example
+
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+secrets.*
+credentials.*
+service-account*.json
+
+# ---------------------------------------------------------------------------
+# Build output & dependencies
+# ---------------------------------------------------------------------------
+node_modules/
+build/
+dist/
+out/
+.next/
+coverage/
+
+# Hardhat / TypeChain generated output
 contracts/artifacts/
 contracts/cache/
 contracts/typechain-types/
-contracts/coverage/
-contracts/.env
-contracts/.env.local
+
+# Python (in case tooling is ever added alongside)
+.venv/
+venv/
+__pycache__/
+
+# ---------------------------------------------------------------------------
+# Local databases, dumps and OS cruft
+# ---------------------------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Large media / datasets — GitHub hard-rejects >100 MB and warns over 50 MB.
+# Keep binaries out of the repo; link them from the README instead.
+# ---------------------------------------------------------------------------
+*.mp4
+*.mov
+*.zip
+*.tar.gz
+*.csv
+*.parquet

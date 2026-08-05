@@ -51,6 +51,15 @@ void main() {
     expect(data.length, greaterThan(4 + 32));
   });
 
+  /// Read the Nth 32-byte ABI word (after the 4-byte selector) as an integer.
+  BigInt wordAt(Uint8List data, int i) {
+    var v = BigInt.zero;
+    for (final b in data.sublist(4 + i * 32, 4 + (i + 1) * 32)) {
+      v = (v << 8) | BigInt.from(b);
+    }
+    return v;
+  }
+
   test('encodeGrantAccess matches grantAccess(address,uint256) selector', () {
     final verifier =
         EthereumAddress.fromHex('0x2222222222222222222222222222222222222222');
@@ -64,6 +73,42 @@ void main() {
     );
     // selector + 2 * 32-byte words
     expect(data.length, equals(4 + 32 + 32));
+  });
+
+  test('encodeGrantAccess encodes expiry in SECONDS, not milliseconds', () {
+    // Selector and length are identical whether or not `~/ 1000` is applied,
+    // so asserting only those lets a unit bug through that turns a 7-day grant
+    // into one lasting until roughly the year 62,000 — the contract only
+    // requires expiresAt > block.timestamp, so it is accepted silently.
+    final verifier =
+        EthereumAddress.fromHex('0x2222222222222222222222222222222222222222');
+    final data = service.encodeGrantAccess(
+      verifier,
+      DateTime.fromMillisecondsSinceEpoch(1900000000 * 1000),
+    );
+    expect(wordAt(data, 0), equals(BigInt.parse('0x2222222222222222222222222222222222222222')));
+    expect(wordAt(data, 1), equals(BigInt.from(1900000000)));
+  });
+
+  test('encodeSubmitKyc encodes the CID and the real docTypeHash', () {
+    final data = service.encodeSubmitKyc('bafyTestCid');
+    // Dynamic string => head is [offset, docTypeHash]; hash is the 2nd word.
+    expect(
+      wordAt(data, 1),
+      equals(
+        BigInt.parse(
+          '0x${KycContractService.docTypeHash.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}',
+        ),
+      ),
+    );
+    // ...and it really is keccak of the documented doc-type set.
+    expect(
+      KycContractService.docTypeHash,
+      equals(keccakUtf8('aadhaar_front,aadhaar_back,pan,photo')),
+    );
+    // The CID round-trips through the tail as UTF-8.
+    expect(String.fromCharCodes(data.sublist(data.length - 32).takeWhile((b) => b != 0)),
+        equals('bafyTestCid'));
   });
 
   test('encodeRevokeAccess matches revokeAccess(address) selector', () {

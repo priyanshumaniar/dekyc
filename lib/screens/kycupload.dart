@@ -114,6 +114,15 @@ class _KYCUploadScreenState extends State<KYCUploadScreen> {
       await Navigator.pushNamed(context, '/login');
       if (!mounted) return;
       if (!auth.isAuthenticated) return; // user backed out of sign-in
+
+      // LoginScreen finishes with pushReplacementNamed('/dashboard'), which
+      // completes the awaited future immediately and leaves the dashboard on
+      // top of us. Continuing here would run a 20-60s encrypt + pin + two
+      // wallet popups on a route the user cannot see, then push /kycdone onto
+      // a buried stack. Only proceed if this screen is still the visible one;
+      // otherwise the user restarts the submit deliberately.
+      final route = ModalRoute.of(context);
+      if (route == null || !route.isCurrent) return;
     }
     if (auth.role == UserRole.verifier) {
       ScaffoldMessenger.of(context).showSnackBar(

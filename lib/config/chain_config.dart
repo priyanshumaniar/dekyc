@@ -1,4 +1,4 @@
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'env.dart';
 
 /// Network configuration. DeKYC targets the Sepolia testnet ONLY.
 class ChainConfig {
@@ -16,9 +16,12 @@ class ChainConfig {
   /// Block explorer base URL.
   static const String explorerBaseUrl = 'https://sepolia.etherscan.io';
 
-  /// RPC endpoint, read from .env at runtime.
-  static String get rpcUrl =>
-      dotenv.maybeGet('SEPOLIA_RPC_URL') ?? '';
+  /// RPC endpoint, read from .env at runtime. Empty when unset.
+  static String get rpcUrl => Env.get('SEPOLIA_RPC_URL');
+
+  /// Whether an RPC endpoint is configured at all. Screens use this to explain
+  /// why on-chain reads are unavailable instead of failing obscurely.
+  static bool get hasRpc => Env.has('SEPOLIA_RPC_URL');
 
   /// Etherscan transaction link helper.
   static String txUrl(String txHash) => '$explorerBaseUrl/tx/$txHash';

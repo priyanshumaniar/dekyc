@@ -8,7 +8,9 @@
     "test": "hardhat test",
     "coverage": "hardhat coverage",
     "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia",
-    "verify:sepolia": "hardhat verify --network sepolia"
+    "verify:sepolia": "hardhat verify --network sepolia",
+    "check:sepolia": "hardhat run scripts/verify-deployment.ts --network sepolia",
+    "e2e:sepolia": "hardhat run scripts/e2e-sepolia.ts --network sepolia"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

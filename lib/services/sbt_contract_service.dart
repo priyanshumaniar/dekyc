@@ -73,26 +73,55 @@ class SbtContractService {
 
   /// Number of CURRENTLY-VALID badges held by [subject] (unrevoked AND
   /// unexpired). Uses the contract's `validBadgeCount`, which — unlike
-  /// `balanceOf` — excludes expired badges. Falls back to `balanceOf` only if
-  /// the deployed contract predates `validBadgeCount` (i.e. not yet redeployed).
+  /// `balanceOf` — excludes expired badges (expiry does not burn the token).
+  ///
+  /// Errors propagate deliberately. This used to fall back to `balanceOf`
+  /// inside a bare `catch (_)`, which silently turned any RPC failure into a
+  /// number that OVER-counts by including expired badges — the exact defect
+  /// `validBadgeCount` exists to fix. A visible error beats a quietly wrong
+  /// count on a screen about identity verification.
   ///
   /// NOTE: attestation is permissionless, so this is a COUNT, not a vetted
   /// trust score — anyone can mint a badge. Trust must be decided per issuer
   /// via [isVerifiedBy]. The UI labels this accordingly.
-  Future<int> verifiedCount(EthereumAddress subject) async {
+  Future<int> verifiedCount(
+    EthereumAddress subject, {
+    int pageSize = 50,
+  }) async {
     final client = _requireClient();
-    try {
-      final fn = _contract.function('validBadgeCount');
-      final result = await client
-          .call(contract: _contract, function: fn, params: [subject]);
-      return (result.first as BigInt).toInt();
-    } catch (_) {
-      // Older deployment without validBadgeCount — degrade to balanceOf.
-      final fn = _contract.function('balanceOf');
-      final result = await client
-          .call(contract: _contract, function: fn, params: [subject]);
-      return (result.first as BigInt).toInt();
+
+    // Page rather than calling the unbounded `validBadgeCount`. Attestation is
+    // permissionless, so the issuer list is attacker-growable: a subject spammed
+    // with thousands of badges would make the single-shot call exceed the RPC's
+    // eth_call gas cap and fail outright. Paging keeps each call small and
+    // bounded no matter how long the list gets.
+    final countFn = _contract.function('subjectIssuerCount');
+    final countResult = await client
+        .call(contract: _contract, function: countFn, params: [subject]);
+    final total = (countResult.first as BigInt).toInt();
+    if (total == 0) return 0;
+
+    final rangeFn = _contract.function('validBadgeCountRange');
+    var valid = 0;
+    for (var start = 0; start < total; start += pageSize) {
+      final end = (start + pageSize) > total ? total : start + pageSize;
+      final page = await client.call(
+        contract: _contract,
+        function: rangeFn,
+        params: [subject, BigInt.from(start), BigInt.from(end)],
+      );
+      valid += (page.first as BigInt).toInt();
     }
+    return valid;
+  }
+
+  /// How many DISTINCT issuers have ever attested to [subject] — the page
+  /// bound behind [verifiedCount], exposed for diagnostics.
+  Future<int> issuerCount(EthereumAddress subject) async {
+    final fn = _contract.function('subjectIssuerCount');
+    final result = await _requireClient()
+        .call(contract: _contract, function: fn, params: [subject]);
+    return (result.first as BigInt).toInt();
   }
 
   Web3Client _requireClient() {

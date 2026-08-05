@@ -50,6 +50,62 @@ void main() {
         throwsArgumentError,
       );
     });
+
+    test('uses the BYTE length, not the character length, in the EIP-191 prefix',
+        () {
+      // The prefix is "\x19Ethereum Signed Message:\n<len>". `len` must be the
+      // UTF-8 BYTE count. With an ASCII-only test corpus the two are identical,
+      // so `message.length` would pass every other test here while breaking
+      // recovery for any user whose signed text contains a non-ASCII character
+      // — and the sign-in message is user-facing prose.
+      const message = 'Rôle: Vérifier — çhars ☃ 🚀';
+      expect(message.length, isNot(equals(utf8.encode(message).length)));
+
+      final sigHex = signPersonal(keyA, message);
+      expect(
+        AuthService.recoverPersonalSigner(message, sigHex).toLowerCase(),
+        equals(keyA.address.hex.toLowerCase()),
+      );
+    });
+
+    test('normalises a v byte of 0/1 to 27/28', () {
+      // web3dart always emits v as 27/28, so this branch of
+      // recoverPersonalSigner is unreachable from the other tests. Some wallets
+      // return the raw recovery id instead; rewrite v to prove we handle it.
+      const message = 'DeKYC auth test message';
+      final sigHex = signPersonal(keyA, message);
+      final bytes = hexToBytes(sigHex.substring(2));
+      expect(bytes[64], anyOf(27, 28)); // precondition
+
+      bytes[64] -= 27; // 27/28 -> 0/1, as some wallets report it
+      final rawV = '0x${bytesToHex(bytes)}';
+
+      expect(
+        AuthService.recoverPersonalSigner(message, rawV).toLowerCase(),
+        equals(keyA.address.hex.toLowerCase()),
+      );
+    });
+
+    test('a signature over a DIFFERENT expiry does not recover to the signer',
+        () {
+      // The tamper-evidence property the README claims: editing any field of a
+      // stored session breaks the signature.
+      final issued = DateTime.utc(2026, 6, 11, 12);
+      String msg(Duration life) => AuthService.buildSignInMessage(
+            address: keyA.address.hex,
+            role: UserRole.individual,
+            nonce: 'abc123',
+            issuedAt: issued,
+            expiresAt: issued.add(life),
+          );
+
+      final sigHex = signPersonal(keyA, msg(const Duration(hours: 24)));
+      // Attacker extends the session to a year.
+      final recovered = AuthService.recoverPersonalSigner(
+          msg(const Duration(days: 365)), sigHex);
+      expect(recovered.toLowerCase(),
+          isNot(equals(keyA.address.hex.toLowerCase())));
+    });
   });
 
   group('AuthService.buildSignInMessage', () {

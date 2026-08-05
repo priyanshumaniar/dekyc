@@ -61,7 +61,12 @@ class _AccessRequestScreenState extends State<AccessRequestScreen> {
       return;
     }
     if (!await _ensureVerifierSession()) return;
-    if (!_wallet.isConnected) return;
+    if (!_wallet.isConnected) {
+      // Every other failure branch here reports itself; this one used to
+      // return silently, so the button looked broken.
+      setState(() => _status = 'Connect your wallet to check access.');
+      return;
+    }
 
     setState(() {
       _checking = true;
