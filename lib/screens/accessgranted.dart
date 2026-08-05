@@ -24,7 +24,7 @@ class AccessGranted extends StatefulWidget {
 class _AccessGrantedState extends State<AccessGranted> {
   final KycFlowService _flow = KycFlowService();
   final TextEditingController _keyCtrl = TextEditingController();
-  final TransportKeyStore _keyStore = TransportKeyStore();
+  final TransportKeyStore _keyStore = TransportKeyStore.instance;
 
   /// This verifier's ECIES transport keypair — the public half is what the
   /// user needs in order to wrap their document key to us.
@@ -249,11 +249,31 @@ class _AccessGrantedState extends State<AccessGranted> {
           const SizedBox(height: 10),
           if (keys == null)
             Text('Preparing…', style: TextStyle(color: p.muted))
-          else
+          else ...[
             SelectableText(
               keys.publicKeyHex,
               style: const TextStyle(fontSize: 11.5, fontFamily: 'monospace'),
             ),
+            if (!_keyStore.isPersisted) ...[
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.warning_amber_rounded, size: 16, color: p.warning),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'This wrapping key could not be saved, so it will change '
+                      'if you reload. Finish the handoff in this session, or a '
+                      'key wrapped to it will stop opening.',
+                      style: TextStyle(color: p.warning, fontSize: 11.5,
+                          height: 1.35),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
         ],
       ),
     );

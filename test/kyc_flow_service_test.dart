@@ -311,8 +311,69 @@ void main() {
       final wrapped = await flow.wrapKeyForVerifier(verifierKeys.publicKeyHex);
       await expectLater(
         flow.resolveDocumentKey(keyMaterial: wrapped),
-        throwsArgumentError,
+        throwsA(isA<KeyUnwrapException>()),
       );
+    });
+
+    test('a wrong-recipient unwrap is reported as a KEY problem, not a doc one',
+        () async {
+      // Both failure modes are AES-GCM `OperationError` underneath. If they
+      // are not distinguished the verifier cannot tell "get the key re-wrapped"
+      // from "ask for a re-upload" — the two have opposite remedies.
+      final intended = KeyWrapService.generateKeyPair();
+      final other = KeyWrapService.generateKeyPair();
+      final wrapped = await flow.wrapKeyForVerifier(intended.publicKeyHex);
+
+      await expectLater(
+        flow.resolveDocumentKey(
+          keyMaterial: wrapped,
+          transportPrivateKey: other.privateKey,
+        ),
+        throwsA(
+          isA<KeyUnwrapException>().having(
+            (e) => e.toString(),
+            'message',
+            allOf(contains('wrapped to a DIFFERENT'), contains('wrap again')),
+          ),
+        ),
+      );
+    });
+
+    test('garbage input is reported as malformed, not as a crypto failure',
+        () async {
+      await expectLater(
+        flow.resolveDocumentKey(keyMaterial: 'obviously not hex'),
+        throwsA(isA<KeyUnwrapException>()),
+      );
+    });
+
+    test('a bundle encrypted under a different key reports a DOCUMENT problem',
+        () async {
+      // Publish a real bundle, then try to open it with a valid-but-unrelated
+      // document key — the shape of "you uploaded this under an older
+      // key-derivation scheme, or from another account".
+      await flow.submitKyc(sampleDocs());
+      final pinned = ipfs.pinned[_FakeIpfs.cid]!;
+      final strangerKey = Uint8List.fromList(List.filled(32, 0x5a));
+
+      await expectLater(
+        flow.decryptBundle(pinned, strangerKey, cid: _FakeIpfs.cid),
+        throwsA(
+          isA<DocumentDecryptException>().having(
+            (e) => e.toString(),
+            'message',
+            allOf(contains('does not decrypt this bundle'),
+                contains('re-upload')),
+          ),
+        ),
+      );
+
+      // ...and the CORRECT key still opens it, so the check above is not
+      // passing for some unrelated reason.
+      final realKey = await flow.deriveUserKey();
+      final docs =
+          await flow.decryptBundle(pinned, realKey, cid: _FakeIpfs.cid);
+      expect(docs.keys, containsAll(sampleDocs().keys));
     });
 
     test('refuses to spend a signature wrapping to an invalid key', () async {

@@ -257,6 +257,11 @@ class KycFlowService {
     required String keyMaterial,
     Uint8List? transportPrivateKey,
   }) async {
+    // Two different AES-GCM operations happen below, and BOTH surface as a bare
+    // `OperationError` from WebCrypto. Undifferentiated, that error is useless:
+    // "the user wrapped to someone else's key" and "this bundle was encrypted
+    // with a different document key" have completely different fixes. Each
+    // stage therefore gets its own diagnosis.
     final key = await resolveDocumentKey(
       keyMaterial: keyMaterial,
       transportPrivateKey: transportPrivateKey,
@@ -268,12 +273,37 @@ class KycFlowService {
 
     final pointer = await contract.getKyc(user, caller: caller);
     final cipherBytes = await _ipfs.downloadBytes(pointer.cid);
-    final plain = await _encryption.decryptBytes(cipherBytes, key);
-    final bundle = jsonDecode(utf8.decode(plain)) as Map<String, dynamic>;
-    final docs = (bundle['docs'] as Map<String, dynamic>);
-    return docs.map(
-      (k, v) => MapEntry(k, base64Decode(v as String)),
-    );
+    return decryptBundle(cipherBytes, key, cid: pointer.cid);
+  }
+
+  /// Decrypt a fetched bundle and unpack its documents.
+  ///
+  /// Separate from [readKyc] so the failure that matters most — "the key does
+  /// not open this bundle" — is reachable without an RPC endpoint or a chain
+  /// read standing in the way.
+  Future<Map<String, Uint8List>> decryptBundle(
+    Uint8List cipherBytes,
+    Uint8List key, {
+    required String cid,
+  }) async {
+    final Uint8List plain;
+    try {
+      plain = await _encryption.decryptBytes(cipherBytes, key);
+    } catch (e) {
+      throw DocumentDecryptException(cid: cid, cause: e);
+    }
+
+    try {
+      final bundle = jsonDecode(utf8.decode(plain)) as Map<String, dynamic>;
+      final docs = (bundle['docs'] as Map<String, dynamic>);
+      return docs.map((k, v) => MapEntry(k, base64Decode(v as String)));
+    } catch (e) {
+      // The GCM tag passed, so the key was right — the envelope is the problem.
+      throw FormatException(
+        'Decrypted $cid successfully, but its contents are not a DeKYC bundle. '
+        'It may have been pinned by a different tool. ($e)',
+      );
+    }
   }
 
   /// Turn whatever the verifier pasted into the 32-byte document key.
@@ -285,15 +315,38 @@ class KycFlowService {
     required String keyMaterial,
     Uint8List? transportPrivateKey,
   }) async {
-    final bytes = KeyWrapService.fromHex(keyMaterial);
-    if (bytes.length == 32) return bytes; // legacy raw key
-    if (transportPrivateKey == null) {
-      throw ArgumentError(
-        'This looks like a wrapped key, but no transport key is available to '
-        'unwrap it.',
+    final Uint8List bytes;
+    try {
+      bytes = KeyWrapService.fromHex(keyMaterial);
+    } catch (e) {
+      throw KeyUnwrapException(
+        'That does not look like a key at all — expected hex characters. '
+        'Copy the whole value the user sent you.',
+        cause: e,
       );
     }
-    return KeyWrapService.unwrap(bytes, transportPrivateKey);
+
+    if (bytes.length == 32) return bytes; // legacy raw key
+
+    if (transportPrivateKey == null) {
+      throw KeyUnwrapException(
+        'This is a wrapped key, but this device has no wrapping key to open it '
+        'with. Reload the screen, send the user your wrapping key, and ask them '
+        'to wrap again.',
+      );
+    }
+
+    try {
+      return await KeyWrapService.unwrap(bytes, transportPrivateKey);
+    } catch (e) {
+      throw KeyUnwrapException(
+        'This key was wrapped to a DIFFERENT wrapping key than this device '
+        'holds. That happens if you reloaded and your wrapping key changed, or '
+        'if the user wrapped to someone else\'s key. Send the user the wrapping '
+        'key currently shown above and ask them to wrap again.',
+        cause: e,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -389,6 +442,38 @@ class KycFlowService {
     return sbt.verifiedCount(EthereumAddress.fromHex(userAddress));
   }
 
+}
+
+/// The wrapped key could not be opened with this device's transport key.
+/// Distinct from [DocumentDecryptException] on purpose: this one is about the
+/// key handoff, and the fix is to re-wrap.
+class KeyUnwrapException implements Exception {
+  KeyUnwrapException(this.message, {this.cause});
+  final String message;
+  final Object? cause;
+  @override
+  String toString() => message;
+}
+
+/// The document key was recovered fine, but it does not decrypt this bundle.
+///
+/// Almost always means the bundle was encrypted under a DIFFERENT document key
+/// than the one the user just wrapped — e.g. it was uploaded by another
+/// account, or before a change to the key-derivation scheme
+/// (`EncryptionService.keyDerivationVersion`), which deliberately rotates every
+/// user's key. The remedy is a fresh upload, not a fresh wrap.
+class DocumentDecryptException implements Exception {
+  DocumentDecryptException({required this.cid, this.cause});
+  final String cid;
+  final Object? cause;
+  @override
+  String toString() =>
+      'The key opened correctly, but it does not decrypt this bundle ($cid). '
+      'The bundle was encrypted with a different document key — most likely it '
+      'was uploaded by a different account, or before the key-derivation '
+      'scheme changed (currently '
+      '${EncryptionService.keyDerivationVersion}). Ask the user to re-upload '
+      'their documents and share a freshly wrapped key.';
 }
 
 /// Live on-chain state of one verifier's access to one user's KYC.

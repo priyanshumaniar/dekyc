@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'key_wrap_service.dart';
@@ -12,14 +13,37 @@ import 'key_wrap_service.dart';
 /// The private half lives in `flutter_secure_storage` and is never displayed,
 /// copied to the clipboard, or sent anywhere.
 class TransportKeyStore {
-  TransportKeyStore({FlutterSecureStorage? storage})
+  TransportKeyStore._({FlutterSecureStorage? storage})
       : _storage = storage ?? const FlutterSecureStorage();
+
+  /// Process-wide singleton.
+  ///
+  /// This MUST NOT be per-screen state. The verifier shows their public key,
+  /// the user goes away and wraps to it, and the verifier comes back — often
+  /// re-mounting the screen in between. A per-State store starts with an empty
+  /// cache each time, so any hiccup reading storage silently mints a NEW
+  /// keypair and the key the user just wrapped to is already stale. The
+  /// symptom is an unwrap failure that looks like a crypto bug.
+  static final TransportKeyStore instance = TransportKeyStore._();
+
+  /// Test seam — an isolated store over a supplied backend.
+  @visibleForTesting
+  factory TransportKeyStore.forTesting(FlutterSecureStorage storage) =>
+      TransportKeyStore._(storage: storage);
 
   static const String _storageKey = 'dekyc.transport.key.v1';
 
   final FlutterSecureStorage _storage;
 
   WrapKeyPair? _cached;
+
+  /// Whether the current keypair actually made it to persistent storage.
+  ///
+  /// False means it lives only in memory: it will not survive a reload, so any
+  /// key the user wraps to it must be used in this session. The UI surfaces
+  /// this rather than letting the user discover it as a decryption failure.
+  bool get isPersisted => _isPersisted;
+  bool _isPersisted = false;
 
   /// The current keypair, generating and persisting one on first use.
   Future<WrapKeyPair> loadOrCreate() async {
@@ -30,9 +54,9 @@ class TransportKeyStore {
     try {
       stored = await _storage.read(key: _storageKey);
     } catch (_) {
-      // Secure storage unavailable (some desktop/test environments). Fall
+      // Secure storage unavailable (some desktop/web/test environments). Fall
       // through to an in-memory key so the feature still works this session —
-      // the user just has to re-share if the app restarts.
+      // but record that it is NOT durable so the UI can warn.
       stored = null;
     }
 
@@ -44,6 +68,7 @@ class TransportKeyStore {
           publicKey: KeyWrapService.publicKeyFor(priv),
         );
         _cached = pair;
+        _isPersisted = true;
         return pair;
       } catch (_) {
         // Corrupt entry — discard and mint a fresh pair rather than wedging.
@@ -54,9 +79,16 @@ class TransportKeyStore {
     }
 
     final pair = KeyWrapService.generateKeyPair();
+    _isPersisted = false;
     try {
       await _storage.write(key: _storageKey, value: pair.privateKeyHex);
-    } catch (_) {/* in-memory only for this session */}
+      // Read back rather than trusting the write: some web/desktop backends
+      // accept a write and then fail to return it, which would leave us
+      // claiming durability we do not have.
+      _isPersisted = await _storage.read(key: _storageKey) == pair.privateKeyHex;
+    } catch (_) {
+      _isPersisted = false; // in-memory only for this session
+    }
     _cached = pair;
     return pair;
   }
