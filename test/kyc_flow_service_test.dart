@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:de_kyc/services/encryption_service.dart';
 import 'package:de_kyc/services/ipfs_service.dart';
 import 'package:de_kyc/services/key_wrap_service.dart';
+import 'package:de_kyc/services/kyc_contract_service.dart';
 import 'package:de_kyc/services/kyc_flow_service.dart';
 import 'package:de_kyc/services/wallet_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -109,11 +110,15 @@ void main() {
   setUp(() {
     wallet = _FakeWallet(userAddress);
     ipfs = _FakeIpfs();
-    // No RPC in unit tests: substitute receipt polling with an immediate OK.
+    // No RPC in unit tests: substitute receipt polling with an immediate OK,
+    // and resolve "my own record" from whatever the fake IPFS holds.
     flow = KycFlowService(
       wallet: wallet,
       ipfs: ipfs,
       confirmer: (_) async {},
+      ownPointer: () async => ipfs.pinned.containsKey(_FakeIpfs.cid)
+          ? KycPointer(cid: _FakeIpfs.cid, submittedAt: DateTime(2026))
+          : null,
     );
   });
 
@@ -137,6 +142,7 @@ void main() {
         wallet: _DisconnectedWallet(),
         ipfs: ipfs,
         confirmer: (_) async {},
+        ownPointer: () async => null,
       );
       await expectLater(disconnected.deriveUserKey(), throwsStateError);
     });
@@ -360,7 +366,7 @@ void main() {
         flow.decryptBundle(pinned, strangerKey, cid: _FakeIpfs.cid),
         throwsA(
           isA<DocumentDecryptException>().having(
-            (e) => e.toString(),
+            (e) => e.toString().toLowerCase(),
             'message',
             allOf(contains('does not decrypt this bundle'),
                 contains('re-upload')),
@@ -374,6 +380,42 @@ void main() {
       final docs =
           await flow.decryptBundle(pinned, realKey, cid: _FakeIpfs.cid);
       expect(docs.keys, containsAll(sampleDocs().keys));
+    });
+
+    test('wrapping verifies the key opens the CALLER\'S OWN bundle first',
+        () async {
+      // Regression guard for a real incident: a test script overwrote the
+      // on-chain record with a bundle encrypted under a throwaway key. The app
+      // still derived the correct wallet key, wrapped it, and reported success
+      // — the mismatch only appeared on the verifier's screen, where nobody
+      // could act on it. Catch it at wrap time, on the side that can fix it.
+      await flow.submitKyc(sampleDocs());
+
+      // Simulate the record now pointing at a bundle this wallet cannot open.
+      final foreign = await EncryptionService().encryptBytes(
+        Uint8List.fromList(utf8.encode('{"version":1,"docs":{}}')),
+        Uint8List.fromList(List.filled(32, 0x5a)),
+      );
+      ipfs.pinned[_FakeIpfs.cid] = foreign;
+
+      final verifierKeys = KeyWrapService.generateKeyPair();
+      await expectLater(
+        flow.wrapKeyForVerifier(verifierKeys.publicKeyHex),
+        throwsA(isA<DocumentDecryptException>()),
+      );
+    });
+
+    test('wrapping succeeds when the key does open the bundle', () async {
+      await flow.submitKyc(sampleDocs());
+      final verifierKeys = KeyWrapService.generateKeyPair();
+      final wrapped =
+          await flow.wrapKeyForVerifier(verifierKeys.publicKeyHex);
+      expect(wrapped, isNotEmpty);
+      final resolved = await flow.resolveDocumentKey(
+        keyMaterial: wrapped,
+        transportPrivateKey: verifierKeys.privateKey,
+      );
+      expect(resolved, equals(await flow.deriveUserKey()));
     });
 
     test('refuses to spend a signature wrapping to an invalid key', () async {

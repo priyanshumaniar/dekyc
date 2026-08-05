@@ -146,6 +146,56 @@ async function main() {
   console.log(`User:     ${user.address}`);
   console.log(`Verifier: ${verifier.address} (read-only, unfunded)`);
 
+  // ---------------------------------------------------------------------------
+  // DESTRUCTIVE-WRITE GUARD
+  //
+  // This script calls submitKYC from the DEPLOYER key — which is very likely
+  // the same account the developer uses in MetaMask to drive the app. Running
+  // it therefore OVERWRITES whatever real KYC record that account holds, with a
+  // bundle encrypted under a throwaway key generated below. The record is then
+  // permanently undecryptable by the app: the wallet-derived key is correct,
+  // but it is not the key this script used, and the symptom shows up much later
+  // as "the key opened correctly, but it does not decrypt this bundle".
+  //
+  // That happened once. It must not happen silently again.
+  // ---------------------------------------------------------------------------
+  const APP_DOC_SET = ethers.keccak256(ethers.toUtf8Bytes(DOC_TYPES));
+  if (await registry.hasRecord(user.address)) {
+    const dth = registry.interface.decodeFunctionResult(
+      "getDocTypeHash",
+      await ethers.provider.call({
+        to: registryAddr,
+        data: registry.interface.encodeFunctionData("getDocTypeHash", [
+          user.address,
+        ]),
+        from: user.address,
+      })
+    )[0];
+
+    if (dth === APP_DOC_SET && process.env.E2E_OVERWRITE !== "1") {
+      console.error(
+        `\n❌ Refusing to run.\n\n` +
+          `   ${user.address} already holds a KYC record whose document set\n` +
+          `   matches the APP's — i.e. it was uploaded from the DeKYC UI, by a\n` +
+          `   real user (probably you).\n\n` +
+          `   This script would overwrite it with a test bundle encrypted under\n` +
+          `   a throwaway key, leaving the app permanently unable to decrypt it.\n\n` +
+          `   Options:\n` +
+          `     • Run against a different DEPLOYER_PRIVATE_KEY (recommended), or\n` +
+          `     • re-run with E2E_OVERWRITE=1 if you really do want to discard\n` +
+          `       that record. You will have to re-upload from the app afterwards.\n`
+      );
+      process.exitCode = 1;
+      return;
+    }
+    console.log(
+      `\n⚠️  ${user.address} already has a record (version ` +
+        `${await registry.recordVersion(user.address)}). This run will REPLACE it,\n` +
+        `   and the replacement is only decryptable by this script. Re-upload\n` +
+        `   from the app when you are done testing.`
+    );
+  }
+
   // --- 1. encrypt -----------------------------------------------------------
   step(1, "Encrypt a document bundle on-device (AES-256-GCM)");
   const key = crypto.randomBytes(32);

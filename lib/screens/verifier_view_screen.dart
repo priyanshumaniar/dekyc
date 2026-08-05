@@ -5,6 +5,7 @@ import '../config/chain_config.dart';
 import '../services/auth_service.dart';
 import '../services/key_wrap_service.dart';
 import '../services/kyc_flow_service.dart';
+import '../services/verifier_list_store.dart';
 import '../services/wallet_service.dart';
 import 'how_to_use.dart';
 import '../theme/app_theme.dart';
@@ -39,8 +40,55 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
 
   static const Duration _grantDuration = Duration(days: 7);
 
+  final VerifierListStore _listStore = VerifierListStore.instance;
+
+  /// The owner whose list is currently loaded, so an account switch can be
+  /// detected and the list swapped rather than left showing the wrong one.
+  String? _loadedOwner;
+
+  @override
+  void initState() {
+    super.initState();
+    _wallet.addListener(_onWalletChanged);
+    _restoreList();
+  }
+
+  void _onWalletChanged() {
+    if (_wallet.address == _loadedOwner) return;
+    // Switching accounts means a different guest list. Drop the old rows
+    // immediately so they cannot be mistaken for the new account's grants.
+    setState(() {
+      _verifiers.clear();
+      _state.clear();
+      _loadedOwner = null;
+    });
+    _restoreList();
+  }
+
+  /// The guest list is device-remembered, not derived from chain state (the
+  /// registry cannot enumerate a mapping, and free-tier RPC cannot scan logs
+  /// far enough back). Without restoring it, leaving this screen and coming
+  /// back dropped every row while the grants stayed live on-chain — which read
+  /// as access vanishing on its own.
+  Future<void> _restoreList() async {
+    final owner = _wallet.address;
+    if (owner == null) return;
+    _loadedOwner = owner;
+    final saved = await _listStore.load(owner);
+    // Guard against an account switch that landed while this read was in
+    // flight — otherwise the previous account's list would be applied.
+    if (!mounted || owner != _wallet.address || saved.isEmpty) return;
+    setState(() {
+      for (final v in saved) {
+        if (!_verifiers.contains(v)) _verifiers.add(v);
+      }
+    });
+    await _refreshAll();
+  }
+
   @override
   void dispose() {
+    _wallet.removeListener(_onWalletChanged);
     _addrCtrl.dispose();
     super.dispose();
   }
@@ -63,9 +111,50 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
       if (!_verifiers.contains(addr)) _verifiers.add(addr);
       _addrCtrl.clear();
     });
-    // Immediately show whether this address ALREADY holds a grant, rather than
-    // implying "added" means "has access".
-    if (_wallet.isConnected) _refreshStatus(addr);
+    final owner = _wallet.address;
+    if (owner != null) {
+      // Persist immediately, so the row survives leaving this screen even if
+      // the user never gets as far as granting.
+      _listStore.add(owner, addr);
+      _refreshStatus(addr);
+    }
+  }
+
+  /// Forget a row locally. Does NOT revoke — the on-chain grant is untouched,
+  /// so this warns when it would hide a live one.
+  Future<void> _forget(String verifier) async {
+    if (_hasLiveGrant(verifier)) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Remove from the list?'),
+          content: const Text(
+            'This verifier still has LIVE access on-chain. Removing them here '
+            'only hides the row on this device — it does not revoke anything, '
+            'and they can still read your documents.\n\n'
+            'Tap Revoke first if that is what you meant.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Hide anyway'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    final owner = _wallet.address;
+    if (owner != null) await _listStore.remove(owner, verifier);
+    if (!mounted) return;
+    setState(() {
+      _verifiers.remove(verifier);
+      _state.remove(verifier);
+    });
   }
 
   Future<void> _grant(String verifier) async {
@@ -463,6 +552,13 @@ class _VerifierViewScreenState extends State<VerifierViewScreen> {
                                       onPressed: connected
                                           ? () => _revoke(v)
                                           : null,
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Remove from list (does not '
+                                          'revoke)',
+                                      icon: Icon(Icons.close,
+                                          size: 18, color: p.muted),
+                                      onPressed: () => _forget(v),
                                     ),
                                   ],
                                 ],

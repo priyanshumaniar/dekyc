@@ -25,6 +25,7 @@ class _AccessRequestScreenState extends State<AccessRequestScreen> {
 
   bool _checking = false;
   bool? _hasAccess;
+  bool _isSelf = false;
   String? _status;
 
   @override
@@ -80,8 +81,27 @@ class _AccessRequestScreenState extends State<AccessRequestScreen> {
         setState(() => _status = 'This address has no KYC on record.');
         return;
       }
+
+      // Self-access is deliberate — you can always read your OWN record, no
+      // grant required. Left unlabelled it looks alarming: testing with one
+      // MetaMask account for both roles makes it seem like any verifier can
+      // read any user, when the contract is doing exactly what it should.
+      final isSelf =
+          user.toLowerCase() == _wallet.address!.toLowerCase();
+      if (isSelf) {
+        setState(() {
+          _isSelf = true;
+          _hasAccess = true;
+          _status = 'This is your OWN address — you always have access to your '
+              'own record, no grant needed. To test the real verifier flow, '
+              'switch to a second wallet account.';
+        });
+        return;
+      }
+
       final granted = await _flow.hasAccess(user, _wallet.address!);
       setState(() {
+        _isSelf = false;
         _hasAccess = granted;
         _status = granted
             ? 'Access granted! You may now read the documents.'
@@ -156,15 +176,23 @@ class _AccessRequestScreenState extends State<AccessRequestScreen> {
                       children: [
                         DeUI.iconChip(
                           context,
-                          _hasAccess == true
-                              ? Icons.check_circle_outline
-                              : Icons.hourglass_top,
-                          color:
-                              _hasAccess == true ? p.success : p.muted,
+                          _isSelf
+                              ? Icons.person_outline
+                              : _hasAccess == true
+                                  ? Icons.check_circle_outline
+                                  : Icons.hourglass_top,
+                          color: _isSelf
+                              ? p.warning
+                              : _hasAccess == true
+                                  ? p.success
+                                  : p.muted,
                         ),
                         const SizedBox(width: 12),
                         Expanded(child: Text(_status!)),
-                        if (_hasAccess == true) ...[
+                        if (_isSelf) ...[
+                          const SizedBox(width: 8),
+                          DeUI.statusChip(context, 'Your own', p.warning),
+                        ] else if (_hasAccess == true) ...[
                           const SizedBox(width: 8),
                           DeUI.statusChip(context, 'Granted', p.success),
                         ],

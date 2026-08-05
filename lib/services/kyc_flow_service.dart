@@ -15,6 +15,9 @@ import 'wallet_service.dart';
 /// Waits for a broadcast transaction to be mined; throws if it reverted.
 typedef TxConfirmer = Future<void> Function(String txHash);
 
+/// Resolves the connected wallet's own on-chain KYC pointer.
+typedef OwnPointerResolver = Future<KycPointer?> Function();
+
 /// End-to-end orchestration: encrypt → pin to IPFS → write CID on-chain, and
 /// the reverse path for a verifier. Keeps the UI screens thin.
 class KycFlowService {
@@ -23,10 +26,12 @@ class KycFlowService {
     IpfsService? ipfs,
     EncryptionService? encryption,
     TxConfirmer? confirmer,
+    OwnPointerResolver? ownPointer,
   })  : _wallet = wallet ?? WalletService.instance,
         _ipfs = ipfs ?? IpfsService(),
         _encryption = encryption ?? EncryptionService(),
-        _confirmer = confirmer;
+        _confirmer = confirmer,
+        _ownPointer = ownPointer;
 
   final WalletService _wallet;
   final IpfsService _ipfs;
@@ -36,6 +41,10 @@ class KycFlowService {
   /// exercised without an RPC endpoint; null in production, where
   /// [awaitConfirmation] does the real thing.
   final TxConfirmer? _confirmer;
+
+  /// Overrides the "what does my own record point at?" lookup. Injected by
+  /// tests so the wrap-time self-check is exercisable without an RPC endpoint.
+  final OwnPointerResolver? _ownPointer;
 
   Web3Client? _client;
   KycContractService? _contract;
@@ -243,7 +252,46 @@ class KycFlowService {
       );
     }
     final key = await deriveUserKey();
+
+    // Prove the key actually opens the bundle the chain points at, BEFORE
+    // handing it over. Otherwise a mismatch — a record written by another tool,
+    // or an upload predating a key-derivation change — only surfaces on the
+    // verifier's screen, where they have no way to act on it and the user has
+    // already been told everything worked.
+    await _assertKeyOpensOwnBundle(key);
+
     return KeyWrapService.toHex(await KeyWrapService.wrap(key, recipient));
+  }
+
+  /// Throws [DocumentDecryptException] if [key] does not decrypt the caller's
+  /// current on-chain bundle. Skipped silently when the record or the bundle
+  /// cannot be reached — an RPC/gateway hiccup must not block a valid share.
+  Future<void> _assertKeyOpensOwnBundle(Uint8List key) async {
+    final address = _wallet.address;
+    if (address == null) return;
+
+    final KycPointer pointer;
+    final Uint8List cipherBytes;
+    try {
+      final resolver = _ownPointer;
+      final resolved = resolver != null
+          ? await resolver()
+          : await (await _contractService()).getKyc(
+              EthereumAddress.fromHex(address),
+              caller: EthereumAddress.fromHex(address),
+            );
+      if (resolved == null) return; // nothing submitted yet
+      pointer = resolved;
+      cipherBytes = await _ipfs.downloadBytes(pointer.cid);
+    } catch (_) {
+      return; // cannot verify right now — do not block the user
+    }
+
+    try {
+      await _encryption.decryptBytes(cipherBytes, key);
+    } catch (e) {
+      throw DocumentDecryptException(cid: pointer.cid, cause: e);
+    }
   }
 
   /// Verifier path: fetch + decrypt a user's KYC bundle.
@@ -470,10 +518,10 @@ class DocumentDecryptException implements Exception {
   String toString() =>
       'The key opened correctly, but it does not decrypt this bundle ($cid). '
       'The bundle was encrypted with a different document key — most likely it '
-      'was uploaded by a different account, or before the key-derivation '
-      'scheme changed (currently '
-      '${EncryptionService.keyDerivationVersion}). Ask the user to re-upload '
-      'their documents and share a freshly wrapped key.';
+      'was uploaded by a different account, by a test script, or before the '
+      'key-derivation scheme changed (currently '
+      '${EncryptionService.keyDerivationVersion}). Re-upload the documents '
+      'from the app, then share a freshly wrapped key.';
 }
 
 /// Live on-chain state of one verifier's access to one user's KYC.

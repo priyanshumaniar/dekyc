@@ -13,7 +13,7 @@
 ![IPFS](https://img.shields.io/badge/IPFS-Pinata-65C2CB?logo=ipfs&logoColor=white)
 ![WalletConnect](https://img.shields.io/badge/WalletConnect-Reown-3b99fc?logo=walletconnect&logoColor=white)
 ![Sepolia](https://img.shields.io/badge/Network-Sepolia-627EEA?logo=ethereum&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-143%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -164,7 +164,7 @@ being decentralized and outside any single company's control. The wallet address
   subject spammed with badges cannot make the count exceed an `eth_call` gas cap.
 - **Dark/light design system** — a MetaMask-inspired wallet aesthetic, dark by
   default, with a persisted toggle.
-- **143 tests** — 44 Solidity (Hardhat) + 99 Dart/Flutter.
+- **154 tests** — 44 Solidity (Hardhat) + 110 Dart/Flutter.
 
 ---
 
@@ -261,6 +261,13 @@ npm run verify:sepolia <DEPLOYED_ADDRESS>
 npm run check:sepolia
 ```
 
+> ⚠️ `e2e:sepolia` submits KYC **from the deployer key**. If that is also the
+> account you use in the app, it will overwrite your real record with a test
+> bundle encrypted under a throwaway key, which the app can then never decrypt.
+> The script refuses to run when it detects a record uploaded from the UI;
+> override with `E2E_OVERWRITE=1` only if you mean it, and re-upload afterwards.
+> Better: give the script its own `DEPLOYER_PRIVATE_KEY`.
+
 Finally, `npm run e2e:sepolia` walks the whole path against the **live**
 contracts — encrypt → pin to Pinata → `submitKYC` → read as owner → confirm an
 ungranted verifier is refused → `grantAccess` → read as the verifier → fetch from
@@ -273,7 +280,7 @@ revert. It costs a little Sepolia ETH and one small IPFS pin.
 ```bash
 cp .env.example .env        # then fill in your own values
 flutter pub get
-flutter test                # 99 passing
+flutter test                # 110 passing
 flutter run -d chrome
 ```
 
@@ -409,6 +416,17 @@ not oversights, and each has a known production fix.
   opens PDFs in the system viewer rather than inline.
 - **`docTypeHash` is fixed.** Every submission uses the same hard-coded
   Aadhaar/PAN/photo document set.
+- **The guest list is remembered on the device, not read from the chain.** A
+  Solidity mapping cannot be enumerated, and replaying `AccessGranted` logs is
+  not an option on a free-tier RPC (Alchemy caps `eth_getLogs` at a 10-block
+  range). So Manage Access remembers the addresses you typed and reads their
+  live status from the chain per row. Clear site data, or open the app on
+  another device, and the rows are gone — **the grants themselves are
+  unaffected and still live on-chain**; re-add the address to see them again.
+- **A user always has access to their own record.** `hasAccess(user, user)` is
+  true by design. Testing with a single wallet for both roles therefore looks
+  like "any verifier can read anyone" — it is not. Use two accounts; Verifier
+  Mode now labels the self-access case explicitly.
 - **The shipped CSP allows `'unsafe-inline'` scripts.** Flutter's debug bootstrap
   requires it; without it `flutter run -d chrome` renders a blank page. Release
   builds do not need it — for production, build with `flutter build web --csp`
@@ -444,7 +462,7 @@ de_kyc/
 │   │   └── doc_view/                # PDF preview: iframe on web, system viewer elsewhere
 │   └── screens/                     # onboarding, auth, upload wizard, status, verifier mode
 ├── assets/contracts/                # KYCRegistry + KYCSoulboundToken ABIs (generated)
-├── test/                            # 99 Dart/Flutter tests
+├── test/                            # 110 Dart/Flutter tests
 └── .env.example                     # SEPOLIA_RPC_URL / PINATA_PROXY_URL / PINATA_JWT / …
 ```
 
