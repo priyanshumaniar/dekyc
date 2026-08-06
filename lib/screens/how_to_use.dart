@@ -172,16 +172,16 @@ class _HowToUseScreenState extends State<HowToUseScreen> {
         _HandoffRow(
           'Your wallet address',
           'lets them grant you the pointer',
-          'copy from the account pill',
+          'Verify → "Send these to the user first" → Copy',
         ),
         _HandoffRow(
           'Your wrapping key',
           'lets them lock the key to you',
-          'Verify → View Documents → Copy',
+          'Verify → "Send these to the user first" → Copy',
         ),
       ],
-      tip: 'Your wrapping key lives on the KYC Documents screen. It is a public '
-          'key — safe to send in the clear.',
+      tip: 'Both sit at the top of the Verify screen, before you check anyone. '
+          'Neither is secret — a public key and a public address.',
     ),
     _Step(
       emoji: '⏳',

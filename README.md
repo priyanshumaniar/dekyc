@@ -13,7 +13,7 @@
 ![IPFS](https://img.shields.io/badge/IPFS-Pinata-65C2CB?logo=ipfs&logoColor=white)
 ![WalletConnect](https://img.shields.io/badge/WalletConnect-Reown-3b99fc?logo=walletconnect&logoColor=white)
 ![Sepolia](https://img.shields.io/badge/Network-Sepolia-627EEA?logo=ethereum&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-178%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -96,6 +96,10 @@ separate things have to change hands, each unlocking a different half:
 | Their **wallet address** (`0x…`, 42 chars) | Manage Access → Add → **Grant** (an on-chain transaction) | The **pointer** — they can now find the encrypted file |
 | Their **wrapping key** (`02…`/`03…`, 66 chars) | Manage Access → 🔐 → sends back a wrapped blob | The **documents** — they can now decrypt it |
 
+Both values sit together at the top of the verifier's **Verify** screen, under
+*"Send these to the user first"* — reachable before any grant exists, because
+the user cannot grant or wrap without them.
+
 Neither alone is enough. Address only and the verifier reaches a file they
 cannot read; wrapped key only and they can read a file they cannot find. Both
 values are public and safe to send in the clear — and so is the wrapped blob,
@@ -172,7 +176,7 @@ being decentralized and outside any single company's control. The wallet address
   subject spammed with badges cannot make the count exceed an `eth_call` gas cap.
 - **Dark/light design system** — a MetaMask-inspired wallet aesthetic, dark by
   default, with a persisted toggle.
-- **178 tests** — 56 Solidity (Hardhat) + 122 Dart/Flutter.
+- **182 tests** — 56 Solidity (Hardhat) + 126 Dart/Flutter (plus a live Sepolia integration test, skipped by default).
 
 ---
 
@@ -295,7 +299,7 @@ screen, as "the key opened correctly, but it does not decrypt this bundle".
 ```bash
 cp .env.example .env        # then fill in your own values
 flutter pub get
-flutter test                # 122 passing
+flutter test                # 126 passing
 flutter run -d chrome
 ```
 

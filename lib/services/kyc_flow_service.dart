@@ -27,11 +27,19 @@ class KycFlowService {
     EncryptionService? encryption,
     TxConfirmer? confirmer,
     OwnPointerResolver? ownPointer,
+    Web3Client? client,
+    String? registryAddressOverride,
   })  : _wallet = wallet ?? WalletService.instance,
         _ipfs = ipfs ?? IpfsService(),
         _encryption = encryption ?? EncryptionService(),
         _confirmer = confirmer,
-        _ownPointer = ownPointer;
+        _ownPointer = ownPointer,
+        _client = client,
+        _registryAddressOverride = registryAddressOverride;
+
+  /// Registry address override. Only set by integration tests that point the
+  /// real services at a specific deployment.
+  final String? _registryAddressOverride;
 
   final WalletService _wallet;
   final IpfsService _ipfs;
@@ -52,7 +60,10 @@ class KycFlowService {
 
   Future<KycContractService> _contractService() async {
     _client ??= Web3Client(ChainConfig.rpcUrl, http.Client());
-    _contract ??= await KycContractService.load(client: _client);
+    _contract ??= await KycContractService.load(
+      client: _client,
+      addressOverride: _registryAddressOverride,
+    );
     return _contract!;
   }
 
