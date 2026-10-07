@@ -30,7 +30,14 @@ import 'package:web3dart/web3dart.dart';
 ///
 /// Every write is made by a wallet generated fresh for the run and funded from
 /// the deployer, so it can never touch an account a human uses.
-const bool _enabled = bool.fromEnvironment('DEKYC_E2E');
+///
+/// NOTE: read as a STRING, not via `bool.fromEnvironment`. That helper only
+/// yields true for the exact literal "true", so the obvious `DEKYC_E2E=1`
+/// silently evaluated to false and the suite reported "All tests skipped" while
+/// looking like it had been enabled.
+const String _e2eFlag = String.fromEnvironment('DEKYC_E2E');
+final bool _enabled = const ['1', 'true', 'yes', 'on']
+    .contains(_e2eFlag.trim().toLowerCase());
 
 /// Reads .env values without flutter_dotenv (no asset bundle needed here).
 Map<String, String> _env(String path) {
@@ -82,6 +89,15 @@ class _LocalWallet implements WalletService {
         data: data,
         value: value == null ? null : EtherAmount.inWei(value),
         maxGas: 400000,
+        // Explicit EIP-1559 fees. Without them web3dart sends a LEGACY tx
+        // priced at whatever eth_gasPrice returned at send time — which on a
+        // rising base fee is immediately unincludable, and the tx then sits in
+        // the mempool forever. (Observed: gasPrice 0.947 gwei against a base
+        // fee of 1.067.) The app itself is unaffected: MetaMask prices its own
+        // transactions. This only bites a locally-signing test wallet.
+        maxFeePerGas: EtherAmount.inWei(BigInt.from(30000000000)), // 30 gwei
+        maxPriorityFeePerGas:
+            EtherAmount.inWei(BigInt.from(2000000000)), // 2 gwei
       ),
       chainId: _chainId,
     );
@@ -131,8 +147,10 @@ void main() {
       deployer,
       Transaction(
         to: userAddr,
-        value: EtherAmount.inWei(BigInt.from(4000000000000000)), // 0.004 ETH
+        value: EtherAmount.inWei(BigInt.from(6000000000000000)), // 0.006 ETH
         maxGas: 21000,
+        maxFeePerGas: EtherAmount.inWei(BigInt.from(30000000000)),
+        maxPriorityFeePerGas: EtherAmount.inWei(BigInt.from(2000000000)),
       ),
       chainId: chainId,
     );

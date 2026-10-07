@@ -1,0 +1,13 @@
+# Test tags used by this project.
+#
+# Declaring them here silences "A tag was used that wasn't specified in
+# dart_test.yaml" and, more usefully, documents which suites are not part of
+# the default run.
+tags:
+  e2e:
+    # Live integration against the deployed Sepolia contracts. Needs network,
+    # a funded DEPLOYER_PRIVATE_KEY and the Pinata credentials, so it is
+    # skipped unless explicitly enabled:
+    #
+    #   flutter test test/dart_e2e_sepolia_test.dart --dart-define=DEKYC_E2E=1
+    skip: false
