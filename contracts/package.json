@@ -1,13 +1,14 @@
 {
   "name": "dekyc-contracts",
   "version": "1.0.0",
-  "description": "Smart contract layer for DeKYC — a self-sovereign KYC registry on Sepolia.",
+  "description": "Smart contract layer for DeKYC, a self-sovereign KYC registry on Sepolia.",
   "license": "MIT",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
     "coverage": "hardhat coverage",
     "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia",
+    "deploy:sbt:sepolia": "DEPLOY_ONLY=sbt hardhat run scripts/deploy.ts --network sepolia",
     "verify:sepolia": "hardhat verify --network sepolia",
     "check:sepolia": "hardhat run scripts/verify-deployment.ts --network sepolia",
     "e2e:sepolia": "hardhat run scripts/e2e-sepolia.ts --network sepolia"

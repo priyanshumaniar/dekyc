@@ -381,6 +381,20 @@ async function main() {
   console.log(`    validBadgeCount ${before} -> ${await sbt.validBadgeCount(subject)}`);
   console.log(`    locked(${tokenId}) = ${await sbt.locked(tokenId)}`);
 
+  // The badge lists must show the new badge on BOTH sides, with its dates.
+  const held = await sbt.badgesOf(subject, 0, 10);
+  const given = await sbt.badgeFor(user.address, subject);
+  if (held.length !== 1 || held[0].tokenId !== tokenId || !held[0].valid) {
+    throw new Error("FAIL: badgesOf does not list the new badge as valid");
+  }
+  if (given.tokenId !== tokenId || given.issuedAt === 0n) {
+    throw new Error("FAIL: badgeFor does not return the issuer's badge");
+  }
+  console.log(
+    `    ✓ badgesOf lists it: issued ${new Date(Number(held[0].issuedAt) * 1000).toISOString()}, ` +
+      `valid until ${new Date(Number(held[0].expiresAt) * 1000).toISOString()}`
+  );
+
   step(15, "Soulbound enforcement on the LIVE contract");
   if (!(await reverts(sbt, "approve", [user.address, tokenId], subject))) {
     throw new Error("FAIL: approve succeeded on a soulbound token");

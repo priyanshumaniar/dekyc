@@ -56,6 +56,31 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
     mapping(address => address[]) private _subjectIssuers;
     mapping(address => mapping(address => bool)) private _isSubjectIssuer;
 
+    /// @dev issuer => the DISTINCT subjects they have ever attested to. The
+    ///      mirror of `_subjectIssuers`, so an issuer can list every badge they
+    ///      have given out. Same bound: one entry per distinct pair, however
+    ///      many times the badge is revoked or renewed.
+    mapping(address => address[]) private _issuerSubjects;
+    mapping(address => mapping(address => bool)) private _isIssuerSubject;
+
+    /// @dev issuer => subject => the most recent tokenId, kept after a revoke.
+    ///      `_tokenOf` is cleared on revoke (so the badge stops counting), but a
+    ///      badge LIST must still be able to show "revoked on ..." rather than
+    ///      silently dropping the row. 0 = this pair never had a badge.
+    mapping(address => mapping(address => uint256)) private _latestTokenOf;
+
+    /// @notice One row of a badge list, shaped for display: who, to whom,
+    ///         when issued, until when, and whether it still counts.
+    struct BadgeView {
+        uint256 tokenId;
+        address issuer;
+        address subject;
+        uint64 issuedAt;
+        uint64 expiresAt;
+        bool revoked;
+        bool valid;
+    }
+
     event Attested(
         address indexed issuer,
         address indexed subject,
@@ -117,11 +142,17 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
             uri: uri
         });
         _tokenOf[msg.sender][subject] = tokenId;
+        _latestTokenOf[msg.sender][subject] = tokenId;
         // Record the issuer once. Re-attesting after a revoke reuses this slot,
         // so the per-subject list cannot be inflated by repeated cycles.
         if (!_isSubjectIssuer[subject][msg.sender]) {
             _isSubjectIssuer[subject][msg.sender] = true;
             _subjectIssuers[subject].push(msg.sender);
+        }
+        // ...and the subject once, on the issuer's side.
+        if (!_isIssuerSubject[msg.sender][subject]) {
+            _isIssuerSubject[msg.sender][subject] = true;
+            _issuerSubjects[msg.sender].push(subject);
         }
 
         // _mint (not _safeMint): the token is soulbound and can never be
@@ -222,6 +253,85 @@ contract KYCSoulboundToken is ERC721, IERC5192 {
                 }
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Badge lists (read-only, for display)
+    // -------------------------------------------------------------------------
+
+    /// @notice The latest badge `issuer` gave `subject`, including a revoked or
+    ///         expired one. `tokenId == 0` means this pair never had a badge.
+    function badgeFor(
+        address issuer,
+        address subject
+    ) external view returns (BadgeView memory) {
+        return _view(_latestTokenOf[issuer][subject]);
+    }
+
+    /// @notice How many DISTINCT subjects `issuer` has ever attested to.
+    /// @dev    The page bound for [badgesIssuedBy].
+    function issuerSubjectCount(address issuer) external view returns (uint256) {
+        return _issuerSubjects[issuer].length;
+    }
+
+    /// @notice Every badge a SUBJECT holds or has held, one row per distinct
+    ///         issuer (the latest badge from each), over the window
+    ///         `[start, end)` of [subjectIssuerCount]. `end` is clamped.
+    /// @dev    Rows include expired and revoked badges so a relying party can
+    ///         see the history; filter on `valid` for what counts today.
+    ///         Permissionless minting means a row is only as trustworthy as
+    ///         its `issuer`.
+    function badgesOf(
+        address subject,
+        uint256 start,
+        uint256 end
+    ) external view returns (BadgeView[] memory rows) {
+        address[] storage issuers = _subjectIssuers[subject];
+        (start, end) = _window(start, end, issuers.length);
+        rows = new BadgeView[](end - start);
+        for (uint256 i = start; i < end; i++) {
+            rows[i - start] = _view(_latestTokenOf[issuers[i]][subject]);
+        }
+    }
+
+    /// @notice Every badge an ISSUER has given out, one row per distinct
+    ///         subject (the latest badge to each), over the window
+    ///         `[start, end)` of [issuerSubjectCount]. `end` is clamped.
+    function badgesIssuedBy(
+        address issuer,
+        uint256 start,
+        uint256 end
+    ) external view returns (BadgeView[] memory rows) {
+        address[] storage subjects = _issuerSubjects[issuer];
+        (start, end) = _window(start, end, subjects.length);
+        rows = new BadgeView[](end - start);
+        for (uint256 i = start; i < end; i++) {
+            rows[i - start] = _view(_latestTokenOf[issuer][subjects[i]]);
+        }
+    }
+
+    function _window(
+        uint256 start,
+        uint256 end,
+        uint256 len
+    ) private pure returns (uint256, uint256) {
+        if (end > len) end = len;
+        if (start > end) revert BadRange(start, end);
+        return (start, end);
+    }
+
+    function _view(uint256 tokenId) private view returns (BadgeView memory v) {
+        if (tokenId == 0) return v; // all-zero row: "no badge"
+        Attestation storage a = _attestations[tokenId];
+        v = BadgeView({
+            tokenId: tokenId,
+            issuer: a.issuer,
+            subject: a.subject,
+            issuedAt: a.issuedAt,
+            expiresAt: a.expiresAt,
+            revoked: a.revoked,
+            valid: isValid(tokenId)
+        });
     }
 
     // -------------------------------------------------------------------------

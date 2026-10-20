@@ -92,6 +92,16 @@ async function main() {
     console.log(`  SBT.validBadgeCount(0x0)     -> ABSENT (stale deployment)`);
     drift = true;
   }
+  // badgesOf / badgesIssuedBy (badge lists) arrived with the October 2026
+  // redeploy. An older SBT answers validBadgeCount but not these.
+  try {
+    const rows = await sbt.badgesOf(ethers.ZeroAddress, 0, 1);
+    const n = await sbt.issuerSubjectCount(ethers.ZeroAddress);
+    console.log(`  SBT.badgesOf / issuerSubjectCount -> ${rows.length} / ${n} (present)`);
+  } catch {
+    console.log(`  SBT.badgesOf                 -> ABSENT (stale deployment)`);
+    drift = true;
+  }
 
   if (drift) {
     console.error(

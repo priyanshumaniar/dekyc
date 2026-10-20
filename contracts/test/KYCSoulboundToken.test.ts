@@ -285,4 +285,109 @@ describe("KYCSoulboundToken", () => {
       sbt.validBadgeCountRange(user.address, 2, 1)
     ).to.be.revertedWithCustomError(sbt, "BadRange");
   });
+
+  // ---------------------------------------------------------------------------
+  // Badge lists
+  // ---------------------------------------------------------------------------
+
+  it("21. badgesOf lists every issuer's badge with dates and validity",
+    async () => {
+    await attest(issuer);
+    const t1 = BigInt(await time.latest());
+    await attest(issuer2, user, 60);
+
+    const rows = await sbt.badgesOf(user.address, 0, 99);
+    expect(rows.length).to.equal(2);
+    expect(rows[0].issuer).to.equal(issuer.address);
+    expect(rows[0].subject).to.equal(user.address);
+    expect(rows[0].tokenId).to.equal(1n);
+    expect(rows[0].issuedAt).to.equal(t1);
+    // The helper picks expiresAt one block before the mint block.
+    expect(Number(rows[0].expiresAt - rows[0].issuedAt)).to.be.closeTo(
+      ONE_YEAR,
+      2
+    );
+    expect(rows[0].valid).to.equal(true);
+    expect(rows[1].issuer).to.equal(issuer2.address);
+
+    // The 60-second badge lapses: still listed, no longer valid.
+    await time.increase(61);
+    const later = await sbt.badgesOf(user.address, 0, 99);
+    expect(later[1].valid).to.equal(false);
+    expect(later[1].revoked).to.equal(false);
+    expect(later[0].valid).to.equal(true);
+  });
+
+  it("22. badgesIssuedBy is the issuer's own registry, one row per subject",
+    async () => {
+    await attest(issuer, user);
+    await attest(issuer, other);
+    await attest(issuer2, user);
+
+    expect(await sbt.issuerSubjectCount(issuer.address)).to.equal(2n);
+    expect(await sbt.issuerSubjectCount(issuer2.address)).to.equal(1n);
+
+    const mine = await sbt.badgesIssuedBy(issuer.address, 0, 99);
+    expect(mine.map((r) => r.subject)).to.deep.equal([
+      user.address,
+      other.address,
+    ]);
+    expect(mine.every((r) => r.issuer === issuer.address)).to.equal(true);
+    expect(mine.every((r) => r.valid)).to.equal(true);
+  });
+
+  it("23. a revoked badge stays listed as revoked instead of vanishing",
+    async () => {
+    await attest(issuer, user);
+    await sbt.connect(issuer).revokeAttestation(user.address);
+
+    const held = await sbt.badgesOf(user.address, 0, 99);
+    expect(held.length).to.equal(1);
+    expect(held[0].tokenId).to.equal(1n);
+    expect(held[0].revoked).to.equal(true);
+    expect(held[0].valid).to.equal(false);
+
+    const given = await sbt.badgesIssuedBy(issuer.address, 0, 99);
+    expect(given[0].revoked).to.equal(true);
+
+    const one = await sbt.badgeFor(issuer.address, user.address);
+    expect(one.tokenId).to.equal(1n);
+    expect(one.revoked).to.equal(true);
+  });
+
+  it("24. renewal replaces the row instead of adding a second one", async () => {
+    await attest(issuer, user, 60);
+    await time.increase(61);
+    await attest(issuer, user); // renew the lapsed badge
+
+    const held = await sbt.badgesOf(user.address, 0, 99);
+    expect(held.length).to.equal(1);
+    expect(held[0].tokenId).to.equal(2n);
+    expect(held[0].valid).to.equal(true);
+    expect(await sbt.issuerSubjectCount(issuer.address)).to.equal(1n);
+    expect((await sbt.badgeFor(issuer.address, user.address)).tokenId)
+      .to.equal(2n);
+  });
+
+  it("25. badgeFor returns an all-zero row for a pair that never had a badge",
+    async () => {
+    const none = await sbt.badgeFor(issuer.address, user.address);
+    expect(none.tokenId).to.equal(0n);
+    expect(none.issuer).to.equal(ethers.ZeroAddress);
+    expect(none.valid).to.equal(false);
+  });
+
+  it("26. badge lists page and clamp like validBadgeCountRange", async () => {
+    await attest(issuer, user);
+    await attest(issuer2, user);
+    expect((await sbt.badgesOf(user.address, 1, 2)).length).to.equal(1);
+    expect((await sbt.badgesOf(user.address, 2, 2)).length).to.equal(0);
+    expect((await sbt.badgesOf(other.address, 0, 99)).length).to.equal(0);
+    await expect(
+      sbt.badgesOf(user.address, 2, 1)
+    ).to.be.revertedWithCustomError(sbt, "BadRange");
+    await expect(
+      sbt.badgesIssuedBy(issuer.address, 5, 1)
+    ).to.be.revertedWithCustomError(sbt, "BadRange");
+  });
 });
