@@ -316,14 +316,22 @@ ran as the deployer silently replaced a real KYC record with a bundle encrypted
 under a discarded test key - which surfaced much later, on the verifier's
 screen, as "the key opened correctly, but it does not decrypt this bundle".
 
-### 2) Flutter app (Flutter 3.29+ / Dart 3.7+)
+### 2) Flutter app (Flutter 3.38+)
 
 ```bash
 cp .env.example .env        # then fill in your own values
 flutter pub get
 flutter test                # 145 passing
-flutter run -d chrome
+flutter run -d chrome --web-port 8765
 ```
+
+Always run on the same fixed port. The browser keeps the app's storage per
+address *including the port*, and plain `flutter run -d chrome` picks a random
+port each time. A new port means a new verifier wrapping key (so any key the
+user wrapped earlier stops opening), a new MetaMask site connection and a fresh
+sign-in. Grants, uploads and badges live on-chain and are unaffected; only the
+wrap hand-off has to be redone. On macOS, port 5000 is taken by AirPlay
+Receiver, hence 8765.
 
 Web is the best-supported target: it detects the MetaMask extension and offers
 one-click connect. On mobile the app falls back to a WalletConnect QR code.
