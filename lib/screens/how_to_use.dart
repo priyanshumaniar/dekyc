@@ -151,9 +151,7 @@ class _HowToUseScreenState extends State<HowToUseScreen> {
       emoji: '🏅',
       title: 'See your badges',
       body: 'When a verifier approves your KYC they can issue you a badge: a '
-          'proof that stays in your wallet and cannot be moved or sold.
-
-'
+          'proof that stays in your wallet and cannot be moved or sold.\n\n'
           'Dashboard → Status → "My badges" lists every badge you hold: who '
           'issued it, the date you got it, and the date it stops being valid. '
           'Each one shows Valid, Expiring soon, Expired or Revoked.',
@@ -234,9 +232,7 @@ class _HowToUseScreenState extends State<HowToUseScreen> {
       title: 'See badges: theirs and yours',
       body: 'When you open a user\'s documents, "This user\'s badges" at the '
           'top lists every badge they already hold: who issued it, when, and '
-          'until when it is valid. Yours is marked "you".
-
-'
+          'until when it is valid. Yours is marked "you".\n\n'
           'Dashboard → Badges lists every badge YOU have issued, one row per '
           'user, with the same dates. Revoke one there if you need to.',
       tip: 'If you already gave this user a valid badge, the app says so '

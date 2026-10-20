@@ -156,7 +156,7 @@ Object _walletError(Object e) {
       message: message.isA<JSString>()
           ? (message as JSString).toDart
           : 'The wallet rejected the request.',
-      data: data == null ? null : data.dartify()?.toString(),
+      data: data?.dartify()?.toString(),
     );
   } catch (_) {
     return e;
