@@ -209,7 +209,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
-          Text('Check access · read documents · mint badges',
+          Text('Check access · read documents · issue badges',
               textAlign: TextAlign.center,
               style: TextStyle(color: p.muted, fontSize: 14)),
         ],
@@ -239,8 +239,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final n = s.verifiedCount!;
           // Honest framing: badges are a count, not a vetted trust score —
           // anyone may attest, so trust is decided per issuer.
-          small = '$n reusable verification badge${n == 1 ? '' : 's'} held — '
-              'each trusted per its issuer.';
+          small = '$n valid verification badge${n == 1 ? '' : 's'} held, '
+              'each trusted per its issuer. See them under Status.';
         } else {
           big = 'Submitted';
           small = 'Encrypted on IPFS, anchored on Sepolia.';
@@ -280,6 +280,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     if (role == UserRole.verifier) {
       add(Icons.travel_explore_outlined, 'Verify', '/accessrequest');
+      add(Icons.workspace_premium_outlined, 'Badges', '/issuedbadges');
       add(Icons.history_outlined, 'Status', '/kycstatus');
       add(Icons.swap_horiz_rounded, 'Switch', '/login');
     } else {

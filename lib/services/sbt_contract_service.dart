@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:web3dart/web3dart.dart';
 
 import '../config/contract_address.dart';
+import 'badge.dart';
 
 /// Wraps the on-chain `KYCSoulboundToken` (ERC-5192) contract via web3dart.
 ///
@@ -122,6 +123,66 @@ class SbtContractService {
     final result = await _requireClient()
         .call(contract: _contract, function: fn, params: [subject]);
     return (result.first as BigInt).toInt();
+  }
+
+  // --- badge lists ---------------------------------------------------------
+
+  /// The latest badge [issuer] gave [subject], including a revoked or expired
+  /// one. Null when the pair never had a badge.
+  Future<KycBadge?> badgeFor(
+    EthereumAddress issuer,
+    EthereumAddress subject,
+  ) async {
+    final fn = _contract.function('badgeFor');
+    final result = await _requireClient()
+        .call(contract: _contract, function: fn, params: [issuer, subject]);
+    return KycBadge.fromRow(result.first as List<dynamic>);
+  }
+
+  /// Every badge [subject] holds or has held: one row per issuer, newest
+  /// badge from each, expired and revoked ones included.
+  Future<List<KycBadge>> badgesOf(
+    EthereumAddress subject, {
+    int pageSize = 50,
+  }) =>
+      _pagedBadges('subjectIssuerCount', 'badgesOf', subject, pageSize);
+
+  /// Every badge [issuer] has given out: one row per subject.
+  Future<List<KycBadge>> badgesIssuedBy(
+    EthereumAddress issuer, {
+    int pageSize = 50,
+  }) =>
+      _pagedBadges('issuerSubjectCount', 'badgesIssuedBy', issuer, pageSize);
+
+  /// Same paging as [verifiedCount]: the lists are attacker-growable
+  /// (minting is permissionless), so never fetch them in one unbounded call.
+  Future<List<KycBadge>> _pagedBadges(
+    String countFnName,
+    String listFnName,
+    EthereumAddress who,
+    int pageSize,
+  ) async {
+    final client = _requireClient();
+    final countResult = await client.call(
+      contract: _contract,
+      function: _contract.function(countFnName),
+      params: [who],
+    );
+    final total = (countResult.first as BigInt).toInt();
+    if (total == 0) return const [];
+
+    final listFn = _contract.function(listFnName);
+    final out = <KycBadge>[];
+    for (var start = 0; start < total; start += pageSize) {
+      final end = (start + pageSize) > total ? total : start + pageSize;
+      final page = await client.call(
+        contract: _contract,
+        function: listFn,
+        params: [who, BigInt.from(start), BigInt.from(end)],
+      );
+      out.addAll(KycBadge.fromRows(page.first as List<dynamic>));
+    }
+    return out;
   }
 
   Web3Client _requireClient() {

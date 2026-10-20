@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../config/chain_config.dart';
+import '../services/badge.dart';
 import '../services/key_wrap_service.dart';
 import '../services/kyc_flow_service.dart';
 import '../services/transport_key_store.dart';
+import '../services/tx_errors.dart';
 import '../theme/app_theme.dart';
 import '../theme/components.dart';
+import 'badge_widgets.dart';
 // Inline PDF viewer: real iframe-backed preview on web, placeholder elsewhere.
 import '../services/doc_view/doc_view_stub.dart'
     if (dart.library.js_interop) '../services/doc_view/doc_view_web.dart';
@@ -52,7 +55,15 @@ class _AccessGrantedState extends State<AccessGranted> {
 
   bool _attesting = false;
   String _attestLabel = '';
-  String? _attestTx;
+
+  /// Badges, read from the chain once the documents are open.
+  /// [_myBadge] is the latest badge THIS verifier gave the user (any status),
+  /// [_userBadges] every badge the user holds from anyone.
+  bool _badgesLoaded = false;
+  String? _badgesError;
+  KycBadge? _myBadge;
+  List<KycBadge> _userBadges = const [];
+  bool _revoking = false;
 
   static const Map<String, String> _labels = {
     'aadhaar_front': 'Aadhaar (Front)',
@@ -89,11 +100,36 @@ class _AccessGrantedState extends State<AccessGranted> {
       // we never setState on a disposed State.
       if (!mounted) return;
       setState(() => _docs = docs);
+      _loadBadges(userAddress, verifierAddress);
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Failed: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Reads this verifier's own badge for the user and the user's full badge
+  /// list. Done before showing the mint button, so a verifier who already
+  /// issued a valid badge is told so instead of being offered a mint the
+  /// contract would refuse (AlreadyAttested).
+  Future<void> _loadBadges(String userAddress, String verifierAddress) async {
+    setState(() => _badgesError = null);
+    try {
+      final mine = await _flow.badgeFor(verifierAddress, userAddress);
+      final all = await _flow.badgesOf(userAddress);
+      if (!mounted) return;
+      setState(() {
+        _myBadge = mine;
+        _userBadges = all;
+        _badgesLoaded = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _badgesError = 'Could not read badges: $e';
+        _badgesLoaded = true;
+      });
     }
   }
 
@@ -195,9 +231,9 @@ class _AccessGrantedState extends State<AccessGranted> {
                     Text(_error!, style: TextStyle(color: p.danger)),
                   ],
                 ] else ...[
-                  Expanded(child: _buildDocList()),
+                  Expanded(child: _buildDocList(verifierAddress)),
                   const SizedBox(height: 8),
-                  _buildAttestBar(userAddress),
+                  _buildAttestBar(userAddress, verifierAddress),
                 ],
               ],
             ),
@@ -279,7 +315,7 @@ class _AccessGrantedState extends State<AccessGranted> {
     );
   }
 
-  Future<void> _attest(String subject) async {
+  Future<void> _attest(String subject, String verifierAddress) async {
     setState(() {
       _attesting = true;
       _attestLabel = 'Sign in your wallet…';
@@ -292,7 +328,7 @@ class _AccessGrantedState extends State<AccessGranted> {
       setState(() => _attestLabel = 'Waiting for Sepolia to confirm…');
       await _flow.awaitConfirmation(tx);
       if (!mounted) return;
-      setState(() => _attestTx = tx);
+      _loadBadges(subject, verifierAddress);
       showDialog(
         context: context,
         builder: (_) => AlertDialog(
@@ -308,16 +344,72 @@ class _AccessGrantedState extends State<AccessGranted> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Attestation failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Badge not issued. ${describeTxError(e)}')));
     } finally {
       if (mounted) setState(() => _attesting = false);
     }
   }
 
-  Widget _buildAttestBar(String subject) {
+  Future<void> _revoke(String subject, String verifierAddress) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Revoke this badge?'),
+        content: const Text(
+          'The badge stops counting for this user straight away, for everyone '
+          'who checks it. It stays listed as "Revoked" so the history is '
+          'visible. You can issue a new badge later.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep it'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Revoke'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _revoking = true);
+    try {
+      final tx = await _flow.revokeAttestation(subject);
+      await _flow.awaitConfirmation(tx);
+      if (!mounted) return;
+      await _loadBadges(subject, verifierAddress);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Badge revoked.')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Badge not revoked. ${describeTxError(e)}')));
+    } finally {
+      if (mounted) setState(() => _revoking = false);
+    }
+  }
+
+  Widget _buildAttestBar(String subject, String verifierAddress) {
     final p = context.pal;
-    if (_attestTx != null) {
+    final mine = _myBadge;
+
+    // Until the chain has answered we do not know whether a mint would even
+    // be accepted, so do not offer one.
+    if (!_badgesLoaded) {
+      return ElevatedButton.icon(
+        onPressed: null,
+        icon: const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2)),
+        label: const Text('Checking existing badges…'),
+      );
+    }
+
+    if (mine != null && mine.counts) {
       return DeUI.card(
         context,
         padding: const EdgeInsets.all(13),
@@ -328,16 +420,26 @@ class _AccessGrantedState extends State<AccessGranted> {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                'You issued a reusable Verified badge to this user.',
+                'You verified this user on ${formatBadgeDate(mine.issuedAt)}. '
+                'Your badge is valid until ${formatBadgeDate(mine.expiresAt)}.',
                 style: TextStyle(color: p.success),
               ),
+            ),
+            TextButton(
+              onPressed: _revoking
+                  ? null
+                  : () => _revoke(subject, verifierAddress),
+              child: Text(_revoking ? 'Revoking…' : 'Revoke'),
             ),
           ],
         ),
       );
     }
+
+    // No badge from this verifier, or only an expired/revoked one.
     return ElevatedButton.icon(
-      onPressed: _attesting ? null : () => _attest(subject),
+      onPressed:
+          _attesting ? null : () => _attest(subject, verifierAddress),
       icon: _attesting
           ? SizedBox(
               width: 20,
@@ -348,30 +450,53 @@ class _AccessGrantedState extends State<AccessGranted> {
           : const Icon(Icons.verified_user, size: 20),
       label: Text(_attesting
           ? _attestLabel
-          : 'Mark as Verified (mint Soulbound proof)'),
+          : mine != null
+              ? 'Issue a new badge (yours is '
+                  '${badgeStatusLabel(mine.status).toLowerCase()})'
+              : 'Mark as Verified (mint Soulbound proof)'),
     );
   }
 
-  Widget _buildDocList() {
+  /// The user's existing badges, shown above the documents so a verifier can
+  /// rely on checks other organisations already did.
+  Widget _badgesSection(String verifierAddress) {
+    final p = context.pal;
+    if (!_badgesLoaded) return const SizedBox.shrink();
+    if (_badgesError != null) {
+      return Text(_badgesError!, style: TextStyle(color: p.danger));
+    }
+    return BadgeListSection(
+      title: "This user's badges",
+      badges: _userBadges,
+      side: BadgeSide.held,
+      me: verifierAddress,
+      emptyText: 'This user holds no badges yet. If you approve their KYC, '
+          'yours will be the first.',
+    );
+  }
+
+  Widget _buildDocList(String verifierAddress) {
     final entries = _docs!.entries.toList();
-    return ListView.separated(
-      itemCount: entries.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 16),
-      itemBuilder: (_, i) {
-        final e = entries[i];
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(_labels[e.key] ?? e.key,
-                style: const TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: _docPreview(e.key, e.value),
-            ),
-          ],
-        );
-      },
+    return ListView(
+      children: [
+        _badgesSection(verifierAddress),
+        const SizedBox(height: 18),
+        for (final e in entries) ...[
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_labels[e.key] ?? e.key,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: _docPreview(e.key, e.value),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+        ],
+      ],
     );
   }
 

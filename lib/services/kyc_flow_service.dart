@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:web3dart/web3dart.dart';
 
 import '../config/chain_config.dart';
+import 'badge.dart';
 import 'encryption_service.dart';
 import 'ipfs_service.dart';
 import 'key_wrap_service.dart';
@@ -519,6 +520,30 @@ class KycFlowService {
   Future<int> verifiedCount(String userAddress) async {
     final sbt = await _sbtService();
     return sbt.verifiedCount(EthereumAddress.fromHex(userAddress));
+  }
+
+  /// The latest badge [issuerAddress] gave [subjectAddress], or null.
+  Future<KycBadge?> badgeFor(String issuerAddress, String subjectAddress) async {
+    final sbt = await _sbtService();
+    return sbt.badgeFor(
+      EthereumAddress.fromHex(issuerAddress),
+      EthereumAddress.fromHex(subjectAddress),
+    );
+  }
+
+  /// Every badge [userAddress] holds or has held, newest first.
+  Future<List<KycBadge>> badgesOf(String userAddress) async {
+    final sbt = await _sbtService();
+    final rows = await sbt.badgesOf(EthereumAddress.fromHex(userAddress));
+    return sortNewestFirst(rows);
+  }
+
+  /// Every badge [issuerAddress] has issued, newest first.
+  Future<List<KycBadge>> badgesIssuedBy(String issuerAddress) async {
+    final sbt = await _sbtService();
+    final rows =
+        await sbt.badgesIssuedBy(EthereumAddress.fromHex(issuerAddress));
+    return sortNewestFirst(rows);
   }
 
 }

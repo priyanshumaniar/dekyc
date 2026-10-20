@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
 
+import '../services/badge.dart';
 import '../services/kyc_flow_service.dart';
 import '../services/wallet_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/components.dart';
+import 'badge_widgets.dart';
 import 'wallet_connect_screen.dart';
 
 /// USER-side screen. Shows whether the connected wallet has submitted KYC and
-/// how many organizations have issued it a reusable soulbound "Verified" badge
-/// — the "verify once, reuse everywhere" status.
+/// every reusable soulbound "Verified" badge it holds: who issued it, when,
+/// and until when it is valid. The "verify once, reuse everywhere" status.
 class KycStatusScreen extends StatefulWidget {
   const KycStatusScreen({super.key});
 
@@ -23,7 +25,7 @@ class _KycStatusScreenState extends State<KycStatusScreen> {
   bool _loading = false;
   String? _error;
   bool? _hasRecord;
-  int? _verifiedCount;
+  List<KycBadge> _badges = const [];
 
   @override
   void initState() {
@@ -49,10 +51,10 @@ class _KycStatusScreenState extends State<KycStatusScreen> {
     });
     try {
       final record = await _flow.hasRecord(addr);
-      final count = await _flow.verifiedCount(addr);
+      final badges = await _flow.badgesOf(addr);
       setState(() {
         _hasRecord = record;
-        _verifiedCount = count;
+        _badges = badges;
       });
     } catch (e) {
       setState(() => _error = '$e');
@@ -117,7 +119,7 @@ class _KycStatusScreenState extends State<KycStatusScreen> {
 
   Widget _statusBody() {
     final p = context.pal;
-    final count = _verifiedCount ?? 0;
+    final count = _badges.where((b) => b.counts).length;
     return ListView(
       children: [
         Center(child: DeUI.addressPill(context, _wallet.address!)),
@@ -143,17 +145,23 @@ class _KycStatusScreenState extends State<KycStatusScreen> {
           icon: count > 0 ? Icons.verified : Icons.verified_outlined,
           iconColor: count > 0 ? p.success : p.muted,
           title: count > 0
-              ? '$count verification badge${count == 1 ? '' : 's'}'
-              : 'No badges yet',
-          subtitle: count > 0
-              ? 'Reusable soulbound proof. Attestation is permissionless, so '
-                  'each badge is only as trustworthy as the organization that '
-                  'issued it — relying parties verify the issuer, not the count.'
-              : 'After a verifier approves your KYC they can mint you a '
-                  'reusable badge, which shows up here.',
+              ? '$count valid verification badge${count == 1 ? '' : 's'}'
+              : 'No valid badges right now',
+          subtitle: 'A badge is a reusable, non-transferable proof that an '
+              'organisation checked your KYC. Each one lists who issued it '
+              'and how long it is valid.',
           trailing: count > 0
               ? DeUI.statusChip(context, '$count', p.success)
               : null,
+        ),
+        const SizedBox(height: 22),
+        BadgeListSection(
+          title: 'My badges',
+          badges: _badges,
+          side: BadgeSide.held,
+          me: _wallet.address,
+          emptyText: 'No badges yet. After a verifier approves your KYC they '
+              'can issue you a badge, and it will appear here with its dates.',
         ),
       ],
     );

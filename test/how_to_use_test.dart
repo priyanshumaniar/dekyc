@@ -31,7 +31,7 @@ void main() {
 
   testWidgets('opens on the Individual perspective by default', (tester) async {
     await pump(tester, role: UserRole.individual);
-    expect(find.text('Step 1 of 6'), findsOneWidget);
+    expect(find.text('Step 1 of 7'), findsOneWidget);
     expect(find.text('First, upload once'), findsOneWidget);
   });
 
@@ -44,7 +44,7 @@ void main() {
     await pump(tester, role: UserRole.individual);
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    expect(find.text('Step 2 of 6'), findsOneWidget);
+    expect(find.text('Step 2 of 7'), findsOneWidget);
     expect(find.text('Ask the verifier for two things'), findsOneWidget);
   });
 
@@ -53,14 +53,14 @@ void main() {
     await pump(tester, role: UserRole.individual);
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    expect(find.text('Step 2 of 6'), findsOneWidget);
+    expect(find.text('Step 2 of 7'), findsOneWidget);
 
     await tester.tap(find.text("I'm verifying someone"));
     await tester.pumpAndSettle();
 
     // Content swapped AND the position reset, so the dots cannot disagree with
     // the visible page.
-    expect(find.text('Step 1 of 6'), findsOneWidget);
+    expect(find.text('Step 1 of 7'), findsOneWidget);
     expect(find.text('Sign in as a Verifier'), findsOneWidget);
     expect(find.text('First, upload once'), findsNothing);
   });
@@ -118,6 +118,19 @@ void main() {
     expect(verifier, contains('Does not decrypt this bundle'));
   });
 
+  testWidgets('both perspectives say where to see badges, with dates',
+      (tester) async {
+    await pump(tester, role: UserRole.individual);
+    final individual = await readAllSteps(tester);
+    expect(individual, contains('See your badges'));
+    expect(individual, contains('My badges'));
+
+    await pump(tester, role: UserRole.verifier);
+    final verifier = await readAllSteps(tester);
+    expect(verifier, contains("This user's badges"));
+    expect(verifier, contains('Dashboard → Badges'));
+  });
+
   testWidgets('the last step closes the guide', (tester) async {
     await tester.pumpWidget(MaterialApp(
       home: Builder(
@@ -140,7 +153,7 @@ void main() {
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
 
-    for (var i = 0; i < 5; i++) {
+    for (var i = 0; i < 6; i++) {
       await tester.tap(find.text('Next'));
       await tester.pumpAndSettle();
     }

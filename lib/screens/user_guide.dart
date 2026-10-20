@@ -85,9 +85,11 @@ class _UserGuideScreenState extends State<UserGuideScreen> {
       emoji: '🏅',
       title: 'Verified once, trusted everywhere',
       body: 'After checking your documents, a verifier mints a Soulbound '
-          'badge to your wallet — a special token that can never be '
+          'badge to your wallet: a special token that can never be '
           'transferred, sold or faked. The next app can just look at the '
-          'badge instead of asking for your documents all over again.',
+          'badge instead of asking for your documents all over again. '
+          'Find yours under Status → "My badges", with who issued each one '
+          'and the dates it is valid.',
       funFact: '"Soulbound" is a real Ethereum standard (ERC-5192). Yes, '
           'the name comes from video games.',
     ),

@@ -147,6 +147,20 @@ class _HowToUseScreenState extends State<HowToUseScreen> {
       tip: 'One honest caveat: revoking stops FUTURE reads. It cannot un-see '
           'documents somebody already downloaded.',
     ),
+    _Step(
+      emoji: '🏅',
+      title: 'See your badges',
+      body: 'When a verifier approves your KYC they can issue you a badge: a '
+          'proof that stays in your wallet and cannot be moved or sold.
+
+'
+          'Dashboard → Status → "My badges" lists every badge you hold: who '
+          'issued it, the date you got it, and the date it stops being valid. '
+          'Each one shows Valid, Expiring soon, Expired or Revoked.',
+      tip: 'Badges expire after a year, so check the "valid until" date. A new '
+          'verifier can see your badges when they open your documents and may '
+          'rely on them instead of checking everything again.',
+    ),
   ];
 
   // ---------------------------------------------------------------------------
@@ -214,6 +228,20 @@ class _HowToUseScreenState extends State<HowToUseScreen> {
           'skip repeating the whole check.',
       tip: 'Anyone can mint a badge, so a badge count is not a trust score. '
           'Always check WHICH issuer signed it before relying on one.',
+    ),
+    _Step(
+      emoji: '📋',
+      title: 'See badges: theirs and yours',
+      body: 'When you open a user\'s documents, "This user\'s badges" at the '
+          'top lists every badge they already hold: who issued it, when, and '
+          'until when it is valid. Yours is marked "you".
+
+'
+          'Dashboard → Badges lists every badge YOU have issued, one row per '
+          'user, with the same dates. Revoke one there if you need to.',
+      tip: 'If you already gave this user a valid badge, the app says so '
+          'instead of offering a second one. After a year it expires and you '
+          'can issue a new one.',
     ),
     _Step(
       emoji: '🩺',

@@ -1,4 +1,7 @@
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
+
+import 'tx_errors.dart';
 
 /// Web implementation backed by the injected EIP-1193 provider
 /// (`window.ethereum`, e.g. the MetaMask browser extension). No QR needed.
@@ -100,13 +103,17 @@ class InjectedWallet {
 
   /// personal_sign. [hexMessage] must be 0x-hex; returns the 0x-hex signature.
   Future<String> personalSign(String hexMessage, String address) async {
-    final res = await _provider
-        .request(_Req(
-          method: 'personal_sign'.toJS,
-          params: [hexMessage.toJS, address.toJS].toJS,
-        ))
-        .toDart;
-    return (res as JSString).toDart;
+    try {
+      final res = await _provider
+          .request(_Req(
+            method: 'personal_sign'.toJS,
+            params: [hexMessage.toJS, address.toJS].toJS,
+          ))
+          .toDart;
+      return (res as JSString).toDart;
+    } catch (e) {
+      throw _walletError(e);
+    }
   }
 
   /// eth_sendTransaction. Returns the tx hash.
@@ -122,10 +129,37 @@ class InjectedWallet {
       data: data.toJS,
       value: value?.toJS,
     );
-    final res = await _provider
-        .request(_Req(method: 'eth_sendTransaction'.toJS, params: [tx].toJS))
-        .toDart;
-    return (res as JSString).toDart;
+    try {
+      final res = await _provider
+          .request(_Req(method: 'eth_sendTransaction'.toJS, params: [tx].toJS))
+          .toDart;
+      return (res as JSString).toDart;
+    } catch (e) {
+      throw _walletError(e);
+    }
+  }
+}
+
+/// The wallet rejects its promise with a plain JS object
+/// (`{code, message, data}`), which prints as "[object Object]" if rethrown.
+/// Pull the fields out into a [WalletRequestException] instead. Anything that
+/// is not shaped like that is passed through untouched.
+Object _walletError(Object e) {
+  try {
+    // ignore: invalid_runtime_check_with_js_interop_types
+    if (e is! JSObject) return e;
+    final code = e.getProperty<JSAny?>('code'.toJS);
+    final message = e.getProperty<JSAny?>('message'.toJS);
+    final data = e.getProperty<JSAny?>('data'.toJS);
+    return WalletRequestException(
+      code: code.isA<JSNumber>() ? (code as JSNumber).toDartInt : null,
+      message: message.isA<JSString>()
+          ? (message as JSString).toDart
+          : 'The wallet rejected the request.',
+      data: data == null ? null : data.dartify()?.toString(),
+    );
+  } catch (_) {
+    return e;
   }
 }
 
