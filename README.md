@@ -13,7 +13,7 @@
 ![IPFS](https://img.shields.io/badge/IPFS-Pinata-65C2CB?logo=ipfs&logoColor=white)
 ![WalletConnect](https://img.shields.io/badge/WalletConnect-Reown-3b99fc?logo=walletconnect&logoColor=white)
 ![Sepolia](https://img.shields.io/badge/Network-Sepolia-627EEA?logo=ethereum&logoColor=white)
-![Tests](https://img.shields.io/badge/Hardhat%20tests-62%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-207%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -191,7 +191,7 @@ being decentralized and outside any single company's control. The wallet address
   refuse. Wallet cancels and contract refusals are shown in plain words.
 - **Dark/light design system** - a MetaMask-inspired wallet aesthetic, dark by
   default, with a persisted toggle.
-- **Tests** - 62 Solidity (Hardhat) plus the Dart/Flutter suite (a live Sepolia integration test is skipped by default).
+- **207 tests** - 62 Solidity (Hardhat) + 145 Dart/Flutter (plus a live Sepolia integration test, skipped by default).
 
 ---
 
@@ -321,7 +321,7 @@ screen, as "the key opened correctly, but it does not decrypt this bundle".
 ```bash
 cp .env.example .env        # then fill in your own values
 flutter pub get
-flutter test                # 126 passing
+flutter test                # 145 passing
 flutter run -d chrome
 ```
 
@@ -516,7 +516,7 @@ de_kyc/
 │   │   └── doc_view/                # PDF preview: iframe on web, system viewer elsewhere
 │   └── screens/                     # onboarding, auth, upload wizard, status, verifier mode
 ├── assets/contracts/                # KYCRegistry + KYCSoulboundToken ABIs (generated)
-├── test/                            # Dart/Flutter tests
+├── test/                            # 145 Dart/Flutter tests
 └── .env.example                     # SEPOLIA_RPC_URL / PINATA_PROXY_URL / PINATA_JWT / …
 ```
 
