@@ -13,7 +13,7 @@
 ![IPFS](https://img.shields.io/badge/IPFS-Pinata-65C2CB?logo=ipfs&logoColor=white)
 ![WalletConnect](https://img.shields.io/badge/WalletConnect-Reown-3b99fc?logo=walletconnect&logoColor=white)
 ![Sepolia](https://img.shields.io/badge/Network-Sepolia-627EEA?logo=ethereum&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Hardhat%20tests-62%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
@@ -71,6 +71,11 @@ Two actors, two contracts:
   **non-transferable Soulbound Token** (`KYCSoulboundToken`, ERC-5192) to the
   user's wallet. Any future relying party can read `isVerifiedBy(issuer, user)`
   and trust an existing attestation instead of re-running KYC.
+- **Badge lists on both sides** - a user sees every badge they hold, a verifier
+  sees every badge they have issued, and a verifier opening someone's documents
+  sees the badges that person already holds. Each row shows the issuer, the date
+  issued and the date it stops being valid. All read from contract state, so
+  there is no admin and no indexer: anyone can read any list.
 
 ### Contracts (Sepolia)
 
@@ -172,11 +177,21 @@ being decentralized and outside any single company's control. The wallet address
 - **On-chain access status** - Manage Access reads the live expiry *and* grant
   version from the chain, and distinguishes *expired* from *lapsed because you
   re-uploaded*.
-- **Paged badge counting** - the client pages `validBadgeCountRange` so a
-  subject spammed with badges cannot make the count exceed an `eth_call` gas cap.
+- **Paged badge counting and lists** - the client pages `validBadgeCountRange`,
+  `badgesOf` and `badgesIssuedBy`, so a subject spammed with badges cannot push
+  a single call past an `eth_call` gas cap.
+- **Badge registry, no admin** - `badgesOf(user)` lists the latest badge from
+  each issuer, `badgesIssuedBy(issuer)` lists the latest badge to each user, and
+  `badgeFor(issuer, user)` answers for one pair. Revoked and expired badges stay
+  listed with their status instead of vanishing, and a renewal replaces its row
+  rather than adding a second one.
+- **No pointless mints** - before offering "Mark as Verified" the app checks
+  whether this verifier already holds a valid badge for the user and says so
+  instead, so a verifier is never sent into a transaction the contract would
+  refuse. Wallet cancels and contract refusals are shown in plain words.
 - **Dark/light design system** - a MetaMask-inspired wallet aesthetic, dark by
   default, with a persisted toggle.
-- **182 tests** - 56 Solidity (Hardhat) + 126 Dart/Flutter (plus a live Sepolia integration test, skipped by default).
+- **Tests** - 62 Solidity (Hardhat) plus the Dart/Flutter suite (a live Sepolia integration test is skipped by default).
 
 ---
 
@@ -249,13 +264,20 @@ aspirational.
 cd contracts
 npm install
 cp .env.example .env        # then fill in your own values
-npx hardhat test            # 56 passing
+npx hardhat test            # 62 passing
 ```
 
 Deploy your own copy (optional - the app already points at a live deployment):
 
 ```bash
 npm run deploy:sepolia
+```
+
+Changed only the badge contract? Redeploy just that one and keep the registry
+(and every KYC record and grant stored in it):
+
+```bash
+npm run deploy:sbt:sepolia
 ```
 
 The deploy script prints both addresses, writes them to
@@ -350,8 +372,13 @@ You need **two** wallet accounts - one acting as the user, one as the verifier.
 8. **Mint reusable proof** - the verifier taps **Mark as Verified (mint Soulbound
    proof)**, signing `attest(user, …)`. Metadata for that specific attestation is
    pinned to IPFS and a non-transferable ERC-5192 badge lands in the user's wallet.
-9. **Reuse** - the user opens Dashboard → **Status** and sees their verification
-   badge count, labelled per-issuer rather than as a trust score.
+   If this verifier already holds a valid badge for the user, the button is
+   replaced by "You verified this user on ... valid until ..." with a Revoke
+   option.
+9. **Reuse** - the user opens Dashboard → **Status** → **My badges** and sees
+   every badge: issuer, date issued, valid until, and status. The verifier opens
+   Dashboard → **Badges** for the list of badges they have issued. A second
+   verifier opening the user's documents sees the existing badges at the top.
 10. **Revoke** - the user taps **Revoke**; the verifier's next `getKYC` reverts.
 11. **See consent binding** - upload a new bundle, then look at Manage Access:
     the row now reads *"Lapsed - you re-uploaded since granting"*, and the
@@ -440,6 +467,14 @@ not oversights, and each has a known production fix.
   you granted, so this exposes nothing new, but it does not hide it either.
   Hiding the access graph would need commitments or a privacy L2, not a storage
   change.
+- **Badge lists are public too.** `badgesOf` and `badgesIssuedBy` are public
+  views over data the `Attested` events already reveal: which issuer verified
+  which address, and when. They add convenience, not exposure, but they do not
+  hide anything either.
+- **A badge list is not a trust list.** Minting is permissionless, so a list can
+  contain badges from issuers nobody has heard of. The app shows the issuer of
+  every row and lets you copy its address; deciding which issuers to trust is
+  still up to the relying party.
 - **A user always has access to their own record.** `hasAccess(user, user)` is
   true by design. Testing with a single wallet for both roles therefore looks
   like "any verifier can read anyone" - it is not. Use two accounts; Verifier
@@ -461,10 +496,10 @@ de_kyc/
 │   │   ├── KYCRegistry.sol          # pointer + access-control table
 │   │   └── KYCSoulboundToken.sol    # ERC-5192 reusable attestation badge
 │   ├── scripts/
-│   │   ├── deploy.ts                # deploys both, writes addresses + ABIs into the app
+│   │   ├── deploy.ts                # deploys both (or only the badge contract), writes addresses + ABIs into the app
 │   │   ├── verify-deployment.ts     # asserts live bytecode == current sources
 │   │   └── e2e-sepolia.ts           # walks the full path against the live contracts
-│   ├── test/                        # 56 tests across both contracts
+│   ├── test/                        # 62 tests across both contracts
 │   └── .env.example                 # SEPOLIA_RPC_URL / DEPLOYER_PRIVATE_KEY / ETHERSCAN_API_KEY
 ├── proxy/                           # optional pinning proxy - keeps the Pinata JWT server-side
 │   ├── server.js                    # dependency-free Node service
@@ -474,12 +509,14 @@ de_kyc/
 │   ├── theme/                       # design system - dark by default, light variant
 │   ├── services/                    # wallet, auth, ipfs, encryption, contracts, flow
 │   │   ├── key_wrap_service.dart    # ECIES: encrypt the document key TO a verifier
+│   │   ├── badge.dart               # badge rows: decoding, Valid / Expiring soon / Expired / Revoked
+│   │   ├── tx_errors.dart           # wallet cancels and contract refusals in plain words
 │   │   ├── transport_key_store.dart # the verifier's ECIES keypair, in secure storage
 │   │   ├── crypto/                  # aes_gcm_io (PointyCastle) | aes_gcm_web (WebCrypto)
 │   │   └── doc_view/                # PDF preview: iframe on web, system viewer elsewhere
 │   └── screens/                     # onboarding, auth, upload wizard, status, verifier mode
 ├── assets/contracts/                # KYCRegistry + KYCSoulboundToken ABIs (generated)
-├── test/                            # 122 Dart/Flutter tests
+├── test/                            # Dart/Flutter tests
 └── .env.example                     # SEPOLIA_RPC_URL / PINATA_PROXY_URL / PINATA_JWT / …
 ```
 
@@ -491,16 +528,17 @@ de_kyc/
 |---|---|
 | Onboarding | Logo mark + value prop → Get Started (role login) / tour |
 | How DeKYC works | Swipeable 7-step tour of the concepts |
-| How to use it | Role-aware 6-step tour of the actual hand-off (Individual / Verifier) |
+| How to use it | Role-aware 7-step tour of the actual hand-off (Individual / Verifier) |
 | Login | Role-based wallet auth (Individual / Verifier) with signed challenge |
 | Connect Wallet | One-click MetaMask on web, WalletConnect QR on mobile |
 | Upload KYC | 4-step wizard → encrypt → IPFS → on-chain, live progress |
 | KYC Done | Tx hash, IPFS CID, Etherscan link |
 | Dashboard | Wallet chip + identity hero + role-aware action tiles |
-| KYC Status | Submission state + verification badge count |
+| KYC Status | Submission state + "My badges": every badge held, with issuer, issue date, valid-until date and status |
+| Badges I issued | Verifier's own registry: every badge issued, one row per user, with dates, status and Revoke |
 | Manage Access | Grant / revoke verifiers with live on-chain expiry and consent-version status, wrap your key to a verifier |
 | Verifier Mode | Check access for a user address, read documents |
-| KYC Documents | Decrypt & view docs, mint soulbound Verified badge |
+| KYC Documents | Decrypt & view docs, see the user's existing badges, mint (or renew, or revoke) your soulbound Verified badge |
 | Profile | Address, network, contract links, key tools, disconnect |
 
 _Screenshots coming soon._
